@@ -366,7 +366,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HomeKitSync/HomeKitSync.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = BJQXT5H782;
+				DEVELOPMENT_TEAM = BQPKG77L55;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = HomeKitSync/Info.plist;
 				INFOPLIST_KEY_NSHomeKitUsageDescription = "HomeKitMCP needs access to your HomeKit accessories.";
@@ -376,7 +376,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.timcinel.homekitmcp1;
+				PRODUCT_BUNDLE_IDENTIFIER = io.tynan.homekitmcp;
 				PRODUCT_NAME = HomeKitMCP;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = YES;
@@ -390,7 +390,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HomeKitSync/HomeKitSync.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = BJQXT5H782;
+				DEVELOPMENT_TEAM = BQPKG77L55;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = HomeKitSync/Info.plist;
 				INFOPLIST_KEY_NSHomeKitUsageDescription = "HomeKitMCP needs access to your HomeKit accessories.";
@@ -400,7 +400,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.timcinel.homekitmcp1;
+				PRODUCT_BUNDLE_IDENTIFIER = io.tynan.homekitmcp;
 				PRODUCT_NAME = HomeKitMCP;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = YES;
@@ -415,12 +415,12 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = BJQXT5H782;
+				DEVELOPMENT_TEAM = BQPKG77L55;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.timcinel.homekitmcp.HomeKitSyncTests;
+				PRODUCT_BUNDLE_IDENTIFIER = io.tynan.homekitmcp.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = YES;
@@ -437,12 +437,12 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = BJQXT5H782;
+				DEVELOPMENT_TEAM = BQPKG77L55;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.timcinel.homekitmcp.HomeKitSyncTests;
+				PRODUCT_BUNDLE_IDENTIFIER = io.tynan.homekitmcp.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = YES;

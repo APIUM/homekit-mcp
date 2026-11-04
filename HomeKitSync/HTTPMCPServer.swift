@@ -165,8 +165,6 @@ final class HTTPMCPServer {
         }
 
         switch (request.method, request.path) {
-        case ("GET", "/events"):
-            startEventStream(on: connection)
         case ("GET", "/mcp"):
             sendJSONObject(discovery(), on: connection)
         case ("POST", "/mcp"):
@@ -185,9 +183,6 @@ final class HTTPMCPServer {
             handleRPC(request.body, on: connection) { rpc, reply in
                 self.tools.call(rpc, reply: reply)
             }
-        case ("GET", "/"):
-            send(HTTPResponse.serialize(status: 200, contentType: "text/html; charset=utf-8",
-                                        body: Data(welcomeHTML().utf8)), on: connection)
         default:
             send(HTTPResponse.failure(HTTPFailure(status: 404, message: "Not Found")), on: connection)
         }
@@ -270,65 +265,5 @@ final class HTTPMCPServer {
         connection.send(content: data, completion: .contentProcessed { _ in
             connection.cancel()
         })
-    }
-
-    private func startEventStream(on connection: NWConnection) {
-        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n"
-            + "Connection: keep-alive\r\n\r\n"
-        var info = serverInfo()
-        info["tools"] = ToolCatalog.all.map { $0.name }
-        guard let json = try? JSONSerialization.data(withJSONObject: info),
-              let text = String(data: json, encoding: .utf8) else {
-            send(HTTPResponse.failure(HTTPFailure(status: 500, message: "Internal Server Error")), on: connection)
-            return
-        }
-        let stream = headers + "event: server-info\ndata: \(text)\n\n"
-        connection.send(content: Data(stream.utf8), completion: .contentProcessed { error in
-            if let error = error {
-                print("Failed to send SSE event: \(error)")
-                connection.cancel()
-            }
-        })
-        Self.cancelWhenClosed(connection)
-    }
-
-    private static func cancelWhenClosed(_ connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, done, error in
-            if done || error != nil {
-                connection.cancel()
-            } else {
-                Self.cancelWhenClosed(connection)
-            }
-        }
-    }
-
-    private func welcomeHTML() -> String {
-        let tools = ToolCatalog.all
-            .map { "<li><code>\($0.name)</code> - \($0.description)</li>" }
-            .joined(separator: "\n")
-        return """
-        <!DOCTYPE html>
-        <html>
-        <head><title>HomeKit MCP Server</title></head>
-        <body>
-            <h1>HomeKit MCP Server</h1>
-            <p>Listening on 127.0.0.1:\(Self.port). Requests must not send an Origin header, must use Host
-            127.0.0.1:\(Self.port) or localhost:\(Self.port), and POST bodies must be application/json.</p>
-            <h2>Endpoints</h2>
-            <ul>
-                <li><code>GET /mcp</code> - MCP server discovery</li>
-                <li><code>POST /mcp</code> - MCP JSON-RPC requests</li>
-                <li><code>POST /mcp/initialize</code> - Initialize MCP session</li>
-                <li><code>POST /mcp/tools/list</code> - List available tools</li>
-                <li><code>POST /mcp/tools/call</code> - Execute a tool</li>
-                <li><code>GET /events</code> - Server-Sent Events stream</li>
-            </ul>
-            <h2>Tools</h2>
-            <ul>
-            \(tools)
-            </ul>
-        </body>
-        </html>
-        """
     }
 }

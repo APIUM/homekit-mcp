@@ -42,9 +42,11 @@ struct ContentView: View {
                         .bold()
                     
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("• GET http://127.0.0.1:8080/ (Welcome page)")
-                        Text("• GET http://127.0.0.1:8080/events (SSE stream)")
+                        Text("• GET http://127.0.0.1:8080/mcp (discovery)")
                         Text("• POST http://127.0.0.1:8080/mcp (JSON-RPC)")
+                        Text("• POST http://127.0.0.1:8080/mcp/initialize")
+                        Text("• POST http://127.0.0.1:8080/mcp/tools/list")
+                        Text("• POST http://127.0.0.1:8080/mcp/tools/call")
                     }
                     .font(.caption)
                     .foregroundColor(.secondary)
