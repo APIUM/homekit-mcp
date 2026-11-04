@@ -18,8 +18,8 @@ def post_json(base_url: str, path: str, body: dict) -> dict:
         raise SystemExit(str(exc)) from exc
 
 
-def render_response(payload: dict, output_json: bool) -> None:
-    if output_json:
+def render_response(payload: object, output_json: bool) -> None:
+    if output_json or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
         return
 

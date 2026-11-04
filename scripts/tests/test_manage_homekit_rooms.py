@@ -2,7 +2,9 @@ import contextlib
 import csv
 import io
 import json
+import os
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,8 +12,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import homekitctl  # noqa: E402
 import manage_homekit_rooms  # noqa: E402
-from fakes import FakeHomeAssistant, FakeHomeKit, accessory, room  # noqa: E402
+from fakes import FakeHomeAssistant, FakeHomeKit, FakeServer, accessory, room  # noqa: E402
 
 try:
     import jinja2.sandbox
@@ -191,6 +194,13 @@ class PlanTests(RoomSyncTestCase):
         for serial in invalid:
             self.assertFalse(manage_homekit_rooms.ENTITY_ID_PATTERN.fullmatch(serial), serial)
 
+    def test_rooms_to_create_lists_each_room_once(self):
+        self.ha.entities["light.bedside"] = {"area": "bedroom", "known": True}
+        code, out, err = self.run_script("--apply")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Rooms to create: Bedroom\n", out)
+        self.assertEqual(self.creates(), ["Bedroom"])
+
     def test_room_match_ignores_case_and_whitespace(self):
         code, out, err = self.run_script()
         self.assertEqual(code, 0, err)
@@ -355,6 +365,23 @@ class ApplyTests(RoomSyncTestCase):
         self.assertIn("(A1): target_room is empty for a move row", err)
         self.assertEqual(self.homekit.mutating_calls(), [])
 
+    def test_apply_plan_in_legacy_encoding_is_an_error(self):
+        plan_path = Path(self.output_dir) / "latin1-plan.csv"
+        header = ",".join(manage_homekit_rooms.PLAN_FIELDS)
+        plan_path.write_bytes(f"{header}\nA1,Caf\xe9,light.kitchen_log_light,Home,Office,Kitchen,move,\n".encode("latin-1"))
+        code, _, err = self.run_script("--apply-plan", str(plan_path))
+        self.assertEqual(code, 1)
+        self.assertIn('save it as "CSV UTF-8"', err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(self.homekit.mutating_calls(), [])
+
+    def test_env_file_in_legacy_encoding_is_an_error(self):
+        env_file = Path(self.output_dir) / "latin1.env"
+        env_file.write_bytes("HASS_SERVER=http://caf\xe9:8123\n".encode("latin-1"))
+        code, _, err = self.run_script("--env-file", str(env_file))
+        self.assertEqual(code, 1)
+        self.assertIn("is not UTF-8 text", err)
+
     def test_apply_plan_accepts_utf8_bom(self):
         code, out, _ = self.run_script()
         plan_path = Path(path_after(out, "Wrote plan CSV:"))
@@ -506,6 +533,30 @@ class ErrorTests(RoomSyncTestCase):
         for text in outputs + [self.all_artifacts_text()]:
             self.assertNotIn(TOKEN, text)
 
+    def test_system_proxy_is_never_used(self):
+        proxied = []
+        proxy = FakeServer(lambda path, body, headers: proxied.append(path) or (502, "text/plain", "proxy", {}))
+        self.addCleanup(proxy.stop)
+        env = {key: value for key, value in os.environ.items() if key.lower() not in ("no_proxy", "http_proxy")}
+        env.update(
+            HASS_SERVER=self.ha.url,
+            HASS_TOKEN=TOKEN,
+            HOMEKIT_MCP_URL=self.homekit.url,
+            http_proxy=proxy.url,
+            HTTP_PROXY=proxy.url,
+        )
+        script = Path(manage_homekit_rooms.__file__)
+        result = subprocess.run(
+            [sys.executable, str(script), "--output-dir", self.output_dir],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(proxied, [])
+        self.assertTrue(self.ha.requests)
+
     def test_redirect_is_refused_and_token_not_forwarded(self):
         elsewhere = FakeHomeAssistant(TOKEN, dict(HA_ENTITIES))
         self.addCleanup(elsewhere.server.stop)
@@ -570,6 +621,8 @@ class ErrorTests(RoomSyncTestCase):
         code, _, err = self.run_script()
         self.assertEqual(code, 1)
         self.assertIn("reports no homes", err)
+        self.assertIn("has a home in the Home app", err)
+        self.assertNotIn("Privacy", err)
 
     def test_unwritable_output_dir_exits_1(self):
         blocker = Path(self.output_dir) / "not-a-directory"
@@ -578,6 +631,14 @@ class ErrorTests(RoomSyncTestCase):
         self.assertEqual(code, 1)
         self.assertIn("Error: Cannot create output directory", err)
         self.assertEqual(self.homekit.mutating_calls(), [])
+
+
+class HomekitctlTests(unittest.TestCase):
+    def test_render_response_prints_non_dict_payload(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            homekitctl.render_response(["unexpected"], output_json=False)
+        self.assertEqual(json.loads(out.getvalue()), ["unexpected"])
 
 
 class HomeAssistantStates:

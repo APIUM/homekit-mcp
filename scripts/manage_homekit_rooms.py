@@ -232,6 +232,8 @@ def load_env_file(path: Path) -> Dict[str, str]:
         lines = path.read_text(encoding="utf-8-sig").splitlines()
     except OSError as exc:
         raise SyncError(f"Cannot read env file {path}: {exc.strerror}") from exc
+    except UnicodeDecodeError as exc:
+        raise SyncError(f"Cannot read env file {path}: it is not UTF-8 text") from exc
     loaded: Dict[str, str] = {}
     for raw_line in lines:
         line = raw_line.strip()
@@ -253,8 +255,8 @@ def select_home(state: HomeState, requested: Optional[str]) -> str:
     homes = state.homes()
     if not homes:
         raise SyncError(
-            "The HomeKit MCP app reports no homes. Allow it to access Home data "
-            "(System Settings > Privacy & Security > HomeKit) and check the Home app shows your home."
+            "The HomeKit MCP app reports no homes. Check that the Apple ID signed in on this Mac "
+            "has a home in the Home app."
         )
     listed = ", ".join(sorted(homes.values()))
     if requested:
@@ -437,6 +439,8 @@ def read_csv(path: Path, required: List[str]) -> List[dict]:
             columns = set(reader.fieldnames or [])
     except OSError as exc:
         raise SyncError(f"Cannot read {path}: {exc.strerror}") from exc
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise SyncError(f"Cannot read {path} ({exc}); save it as \"CSV UTF-8\" and try again") from exc
     missing = [name for name in required if name not in columns]
     if missing:
         raise SyncError(f"{path} is missing columns: {', '.join(missing)}")
@@ -475,7 +479,11 @@ def print_plan(rows: List[PlanRow], plan_path: Path) -> None:
     pending = [row for row in rows if row.action in ACTIONABLE]
     for row in pending:
         print(f"  {row.action:<16} {label(row)}: {row.current_room or '-'} -> {row.target_room}")
-    new_rooms = sorted({row.target_room for row in pending if row.action == CREATE_AND_MOVE}, key=room_key)
+    rooms_by_key: Dict[str, str] = {}
+    for row in pending:
+        if row.action == CREATE_AND_MOVE:
+            rooms_by_key.setdefault(room_key(row.target_room), row.target_room.strip())
+    new_rooms = [rooms_by_key[key] for key in sorted(rooms_by_key)]
     print(f"Wrote plan CSV: {plan_path}")
     print(f"Accessories in plan: {len(rows)}")
     print(f"To move: {len(pending)}")

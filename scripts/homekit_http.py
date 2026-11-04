@@ -17,8 +17,8 @@ class RefuseRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-# urllib copies the Authorization header to any host a redirect names.
-opener = urllib.request.build_opener(RefuseRedirects)
+# urllib copies the Authorization header to any host a redirect names, and would send it through a system proxy.
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), RefuseRedirects)
 
 
 def post_json(url: str, body: dict, headers: Optional[Dict[str, str]] = None, timeout: float = 30.0) -> object:

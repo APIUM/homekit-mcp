@@ -264,7 +264,7 @@ This project is a fork of [TimCinel/homekit-mcp](https://github.com/TimCinel/hom
 **"HomeKit has not finished loading homes" (-32000)**
 - The app has just started; wait a few seconds and run the command again.
 
-**"HomeKit access not authorised" (-32001)**
+**"HomeKit access is not authorised for HomeKitMCP" (-32001)**
 - Allow the app in System Settings > Privacy & Security > HomeKit, then restart it.
 
 **Server not reachable**
