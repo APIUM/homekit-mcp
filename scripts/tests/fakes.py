@@ -5,7 +5,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable, Dict, List, Optional, Tuple
 
 
-Handler = Callable[[str, dict, Dict[str, str]], Tuple[int, str, str]]
+Reply = Tuple[int, str, str, Dict[str, str]]
+Handler = Callable[[str, dict, Dict[str, str]], Reply]
+
+HA_BRIDGE_SERIAL = "homekit.bridge"
 
 
 class FakeServer:
@@ -14,11 +17,13 @@ class FakeServer:
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length) or b"{}")
-                status, content_type, text = handler(self.path, body, dict(self.headers))
+                status, content_type, text, extra_headers = handler(self.path, body, dict(self.headers))
                 data = text.encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
+                for name, value in extra_headers.items():
+                    self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -40,28 +45,43 @@ class FakeHomeAssistant:
     def __init__(self, token: str, entities: Dict[str, dict]):
         self.token = token
         self.entities = entities
+        self.seen_headers: List[Dict[str, str]] = []
         self.requests: List[dict] = []
+        self.reply: Optional[Reply] = None
         self.server = FakeServer(self.handle)
         self.url = self.server.url
 
-    def handle(self, path: str, body: dict, headers: Dict[str, str]) -> Tuple[int, str, str]:
+    def handle(self, path: str, body: dict, headers: Dict[str, str]) -> Reply:
+        self.seen_headers.append(headers)
         if path != "/api/template":
-            return 404, "text/plain", "404: Not Found"
+            return 404, "text/plain", "404: Not Found", {}
         if headers.get("Authorization") != f"Bearer {self.token}":
-            return 401, "text/plain", "401: Unauthorized"
+            return 401, "text/plain", "401: Unauthorized", {}
         self.requests.append(body)
+        if self.reply:
+            return self.reply
         ids = body.get("variables", {}).get("ids", [])
         result = {
             entity_id: self.entities.get(entity_id, {"area": None, "known": False}) for entity_id in ids
         }
-        return 200, "text/plain; charset=utf-8", json.dumps(result)
+        return 200, "text/plain; charset=utf-8", json.dumps(result), {}
 
 
-def accessory(uuid: str, name: str, serial: str, room: str, home: str = "Home", home_uuid: str = "HOME-1") -> dict:
+def accessory(
+    uuid: str,
+    name: str,
+    serial: str,
+    room: str,
+    home: str = "Home",
+    home_uuid: str = "HOME-1",
+    bridge_serial: Optional[str] = HA_BRIDGE_SERIAL,
+) -> dict:
     return {
         "uuid": uuid,
         "name": name,
         "serial_number": serial,
+        "bridge_uuid": "BRIDGE-1" if bridge_serial else None,
+        "bridge_serial_number": bridge_serial,
         "room": room,
         "room_uuid": "",
         "home": home,
@@ -84,6 +104,9 @@ class FakeHomeKit:
             item["room_uuid"] = match["uuid"] if match else ""
         self.calls: List[Tuple[str, dict]] = []
         self.fail_moves = set()
+        self.fail_creates = set()
+        self.tool_errors: Dict[str, str] = {}
+        self.structured = True
         self.room_counter = 0
         self.server = FakeServer(self.handle)
         self.url = self.server.url
@@ -118,23 +141,24 @@ class FakeHomeKit:
     def mutating_calls(self) -> List[Tuple[str, dict]]:
         return [call for call in self.calls if not call[0].startswith("get_")]
 
-    def handle(self, path: str, body: dict, headers: Dict[str, str]) -> Tuple[int, str, str]:
+    def handle(self, path: str, body: dict, headers: Dict[str, str]) -> Reply:
         if path != "/mcp/tools/call":
-            return 404, "text/plain", "Not Found"
+            return 404, "text/plain", "Not Found", {}
         tool = body["params"]["name"]
         arguments = body["params"].get("arguments", {})
         self.calls.append((tool, arguments))
         try:
+            if tool in self.tool_errors:
+                raise ValueError(self.tool_errors[tool])
             structured = self.run_tool(tool, arguments)
         except ValueError as exc:
             reply = {"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32000, "message": str(exc)}}
         else:
-            reply = {
-                "jsonrpc": "2.0",
-                "id": body.get("id"),
-                "result": {"content": [{"type": "text", "text": "ok"}], "structuredContent": structured},
-            }
-        return 200, "application/json", json.dumps(reply)
+            result = {"content": [{"type": "text", "text": "ok"}]}
+            if self.structured:
+                result["structuredContent"] = structured
+            reply = {"jsonrpc": "2.0", "id": body.get("id"), "result": result}
+        return 200, "application/json", json.dumps(reply), {}
 
     def run_tool(self, tool: str, arguments: dict) -> dict:
         if tool == "get_all_accessories":
@@ -142,6 +166,8 @@ class FakeHomeKit:
         if tool == "get_all_rooms":
             return {"rooms": copy.deepcopy(self.rooms)}
         if tool == "create_room":
+            if arguments["name"].casefold() in self.fail_creates:
+                raise ValueError("HomeKit refused to create the room")
             home = next(r for r in self.rooms if r["home_uuid"] == arguments["home_uuid"])
             existing = self.room_named(arguments["home_uuid"], arguments["name"])
             if existing:

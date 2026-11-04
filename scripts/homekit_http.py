@@ -12,6 +12,15 @@ class RequestError(Exception):
         self.status = status
 
 
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# urllib copies the Authorization header to any host a redirect names.
+opener = urllib.request.build_opener(RefuseRedirects)
+
+
 def post_json(url: str, body: dict, headers: Optional[Dict[str, str]] = None, timeout: float = 30.0) -> object:
     try:
         request = urllib.request.Request(
@@ -20,9 +29,15 @@ def post_json(url: str, body: dict, headers: Optional[Dict[str, str]] = None, ti
             headers={"Content-Type": "application/json", **(headers or {})},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with opener.open(request, timeout=timeout) as response:
             payload = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            location = exc.headers.get("Location", "another URL")
+            raise RequestError(
+                f"Server redirected (HTTP {exc.code}) to {location}; redirects are not followed, use the final URL",
+                status=exc.code,
+            ) from exc
         message = exc.read().decode("utf-8", errors="replace")
         raise RequestError(f"Server returned HTTP {exc.code}: {message}", status=exc.code) from exc
     except urllib.error.URLError as exc:
