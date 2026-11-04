@@ -289,6 +289,17 @@ final class HTTPMCPServer {
                 connection.cancel()
             }
         })
+        Self.cancelWhenClosed(connection)
+    }
+
+    private static func cancelWhenClosed(_ connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, done, error in
+            if done || error != nil {
+                connection.cancel()
+            } else {
+                Self.cancelWhenClosed(connection)
+            }
+        }
     }
 
     private func welcomeHTML() -> String {

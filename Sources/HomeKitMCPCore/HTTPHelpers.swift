@@ -58,11 +58,12 @@ public struct HTTPRequestBuffer {
     public mutating func append(_ chunk: Data) -> HTTPParseResult {
         data.append(chunk)
         if head == nil {
+            let tooLarge = HTTPFailure(status: 431, message: "Request headers too large")
             guard let separator = data.range(of: Data("\r\n\r\n".utf8)) else {
-                if data.count > Self.maxHeaderBytes {
-                    return .failed(HTTPFailure(status: 431, message: "Request headers too large"))
-                }
-                return .incomplete
+                return data.count > Self.maxHeaderBytes ? .failed(tooLarge) : .incomplete
+            }
+            guard separator.lowerBound <= Self.maxHeaderBytes else {
+                return .failed(tooLarge)
             }
             switch Self.parseHead(data.subdata(in: 0..<separator.lowerBound), bodyStart: separator.upperBound) {
             case .success(let parsed):

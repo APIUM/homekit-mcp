@@ -3,6 +3,8 @@
 included:
   - HomeKitSync
   - HomeKitSyncTests
+  - Sources/HomeKitMCPCore
+  - Tests/HomeKitMCPCoreTests
 
 excluded:
   - Pods

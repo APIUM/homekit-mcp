@@ -1,5 +1,5 @@
-import XCTest
 @testable import HomeKitMCPCore
+import XCTest
 
 final class AnyEncodableTests: XCTestCase {
     
@@ -49,8 +49,6 @@ final class AnyEncodableTests: XCTestCase {
         let value = AnyEncodable(NSNull())
         let data = try JSONEncoder().encode(value)
         
-        // Should encode as JSON null
-        let jsonString = String(data: data, encoding: .utf8)!
-        XCTAssertEqual(jsonString, "null")
+        XCTAssertEqual(String(data: data, encoding: .utf8), "null")
     }
 }

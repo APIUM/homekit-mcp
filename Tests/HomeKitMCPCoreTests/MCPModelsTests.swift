@@ -1,5 +1,5 @@
-import XCTest
 @testable import HomeKitMCPCore
+import XCTest
 
 final class MCPModelsTests: XCTestCase {
     
@@ -16,15 +16,13 @@ final class MCPModelsTests: XCTestCase {
         }
         """
         
-        let data = jsonString.data(using: .utf8)!
+        let data = Data(jsonString.utf8)
         let request = try JSONDecoder().decode(MCPRequest.self, from: data)
         
         XCTAssertEqual(request.jsonrpc, "2.0")
         XCTAssertEqual(request.id, 123)
         XCTAssertEqual(request.method, "tools/call")
-        XCTAssertNotNil(request.params)
-        
-        let params = request.params!
+        let params = try XCTUnwrap(request.params)
         XCTAssertEqual(params["name"]?.value as? String, "get_all_rooms")
     }
     

@@ -1,6 +1,6 @@
+@testable import HomeKitMCPCore
 import Network
 import XCTest
-@testable import HomeKitMCPCore
 
 final class LoopbackEndpointTests: XCTestCase {
     private func endpoint(_ host: NWEndpoint.Host) -> NWEndpoint {

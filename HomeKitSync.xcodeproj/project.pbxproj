@@ -8,10 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		D12345678901234567890123 /* MCPApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890124 /* MCPApp.swift */; };
-		D12345678901234567890143 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890144 /* MCPServer.swift */; };
+		D12345678901234567890182 /* MCPModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890183 /* MCPModels.swift */; };
 		D12345678901234567890147 /* HTTPMCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890148 /* HTTPMCPServer.swift */; };
 		D12345678901234567890149 /* HTTPMCPServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890150 /* HTTPMCPServerTests.swift */; };
-		D12345678901234567890151 /* HomeKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890152 /* HomeKitManager.swift */; };
 		D12345678901234567890164 /* CITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890165 /* CITests.swift */; };
 		D12345678901234567890170 /* ToolArguments.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890171 /* ToolArguments.swift */; };
 		D12345678901234567890172 /* LoopbackEndpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890173 /* LoopbackEndpoint.swift */; };
@@ -35,11 +34,10 @@
 		D12345678901234567890124 /* MCPApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPApp.swift; sourceTree = "<group>"; };
 		D12345678901234567890126 /* HomeKitMCP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HomeKitMCP.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D12345678901234567890127 /* HomeKitSync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HomeKitSync.entitlements; sourceTree = "<group>"; };
-		D12345678901234567890144 /* MCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServer.swift; sourceTree = "<group>"; };
+		D12345678901234567890183 /* MCPModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/HomeKitMCPCore/MCPModels.swift; sourceTree = SOURCE_ROOT; };
 		D12345678901234567890145 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D12345678901234567890148 /* HTTPMCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPMCPServer.swift; sourceTree = "<group>"; };
 		D12345678901234567890150 /* HTTPMCPServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPMCPServerTests.swift; sourceTree = "<group>"; };
-		D12345678901234567890152 /* HomeKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitManager.swift; sourceTree = "<group>"; };
 		D12345678901234567890153 /* HomeKitSyncTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HomeKitSyncTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D12345678901234567890165 /* CITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CITests.swift; sourceTree = "<group>"; };
 		D12345678901234567890171 /* ToolArguments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/HomeKitMCPCore/ToolArguments.swift; sourceTree = SOURCE_ROOT; };
@@ -79,6 +77,7 @@
 				D12345678901234567890175 /* HTTPHelpers.swift */,
 				D12345678901234567890177 /* ToolDefinitions.swift */,
 				D12345678901234567890179 /* SingleUseCallback.swift */,
+				D12345678901234567890183 /* MCPModels.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -86,10 +85,8 @@
 			isa = PBXGroup;
 			children = (
 				D12345678901234567890124 /* MCPApp.swift */,
-				D12345678901234567890144 /* MCPServer.swift */,
 				D12345678901234567890148 /* HTTPMCPServer.swift */,
 				D12345678901234567890181 /* HomeKitTools.swift */,
-				D12345678901234567890152 /* HomeKitManager.swift */,
 				D12345678901234567890127 /* HomeKitSync.entitlements */,
 				D12345678901234567890145 /* Info.plist */,
 			);
@@ -213,9 +210,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				D12345678901234567890123 /* MCPApp.swift in Sources */,
-				D12345678901234567890143 /* MCPServer.swift in Sources */,
+				D12345678901234567890182 /* MCPModels.swift in Sources */,
 				D12345678901234567890147 /* HTTPMCPServer.swift in Sources */,
-				D12345678901234567890151 /* HomeKitManager.swift in Sources */,
 				D12345678901234567890170 /* ToolArguments.swift in Sources */,
 				D12345678901234567890172 /* LoopbackEndpoint.swift in Sources */,
 				D12345678901234567890174 /* HTTPHelpers.swift in Sources */,

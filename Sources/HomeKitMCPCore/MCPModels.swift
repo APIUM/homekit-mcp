@@ -1,7 +1,5 @@
 import Foundation
 
-// MARK: - MCP Protocol Models
-
 public struct MCPRequest: Codable {
     public let jsonrpc: String
     public let id: Int?

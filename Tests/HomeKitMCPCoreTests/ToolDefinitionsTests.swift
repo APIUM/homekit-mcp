@@ -1,5 +1,5 @@
-import XCTest
 @testable import HomeKitMCPCore
+import XCTest
 
 final class ToolDefinitionsTests: XCTestCase {
     private func encodedTools() throws -> [[String: Any]] {

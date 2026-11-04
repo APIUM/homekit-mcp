@@ -1,5 +1,5 @@
-import XCTest
 @testable import HomeKitMCPCore
+import XCTest
 
 final class HTTPRequestBufferTests: XCTestCase {
     private let body = #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#
@@ -128,6 +128,15 @@ final class HTTPRequestBufferTests: XCTestCase {
             return XCTFail("Chunked request was accepted")
         }
         XCTAssertEqual(failure.status, 501)
+    }
+
+    func testOversizeHeadersWithSeparatorInOneChunkAreRejected() {
+        let filler = String(repeating: "a", count: HTTPRequestBuffer.maxHeaderBytes)
+        let raw = "GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nX-Filler: \(filler)\r\n\r\n"
+        guard case .failed(let failure)? = feed([raw]).last else {
+            return XCTFail("Oversize headers were accepted")
+        }
+        XCTAssertEqual(failure.status, 431)
     }
 
     func testMalformedRequestLineIsRejected() {

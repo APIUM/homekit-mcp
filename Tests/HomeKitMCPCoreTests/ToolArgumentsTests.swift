@@ -1,5 +1,5 @@
-import XCTest
 @testable import HomeKitMCPCore
+import XCTest
 
 final class ToolArgumentsTests: XCTestCase {
     private let homeUUID = "6F1E3C4A-2B7D-4E8F-9A10-B2C3D4E5F601"
@@ -76,8 +76,8 @@ final class ToolArgumentsTests: XCTestCase {
         XCTAssertNotEqual(ToolArguments.roomNameKey("Living Room"), ToolArguments.roomNameKey("LivingRoom"))
     }
 
-    private func assertError<T>(_ expected: ToolArgumentError, _ body: () throws -> T,
-                                file: StaticString = #filePath, line: UInt = #line) {
+    private func assertError<T>(_ expected: ToolArgumentError, file: StaticString = #filePath, line: UInt = #line,
+                                _ body: () throws -> T) {
         XCTAssertThrowsError(try body(), file: file, line: line) { error in
             XCTAssertEqual(error as? ToolArgumentError, expected, file: file, line: line)
         }

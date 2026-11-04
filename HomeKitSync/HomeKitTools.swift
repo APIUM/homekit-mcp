@@ -31,6 +31,7 @@ final class HomeKitTools: NSObject, HMHomeManagerDelegate {
     static let notAuthorisedCode = -32001
     private static let requestTimeout: TimeInterval = 20
     private static let characteristicReadTimeout: TimeInterval = 5
+    private static let homeAssistantBridgeSerial = "homekit.bridge"
 
     private let homeManager = HMHomeManager()
     private var homesLoaded = false
@@ -228,11 +229,15 @@ final class HomeKitTools: NSObject, HMHomeManagerDelegate {
                     bridges[bridged] = bridge
                 }
             }
+            let haBridges = home.accessories.filter {
+                Self.informationValue($0, HMCharacteristicTypeSerialNumber) == Self.homeAssistantBridgeSerial
+            }
+            let fallbackBridge = haBridges.count == 1 ? haBridges.first : nil
             for accessory in home.accessories {
                 let room = accessory.room ?? defaultRoom
                 let category = accessory.category.localizedDescription
                 let serial = Self.informationValue(accessory, HMCharacteristicTypeSerialNumber)
-                let bridge = bridges[accessory.uniqueIdentifier]
+                let bridge = bridges[accessory.uniqueIdentifier] ?? (accessory.isBridged ? fallbackBridge : nil)
                 let bridgeSerial = bridge.flatMap { Self.informationValue($0, HMCharacteristicTypeSerialNumber) }
                 accessories.append([
                     "uuid": accessory.uniqueIdentifier.uuidString,
