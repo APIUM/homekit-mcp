@@ -13,6 +13,8 @@
 		D12345678901234567890149 /* HTTPMCPServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890150 /* HTTPMCPServerTests.swift */; };
 		D12345678901234567890151 /* HomeKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890152 /* HomeKitManager.swift */; };
 		D12345678901234567890164 /* CITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890165 /* CITests.swift */; };
+		D12345678901234567890170 /* ToolArguments.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890171 /* ToolArguments.swift */; };
+		D12345678901234567890172 /* LoopbackEndpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12345678901234567890173 /* LoopbackEndpoint.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -36,6 +38,8 @@
 		D12345678901234567890152 /* HomeKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitManager.swift; sourceTree = "<group>"; };
 		D12345678901234567890153 /* HomeKitSyncTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HomeKitSyncTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D12345678901234567890165 /* CITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CITests.swift; sourceTree = "<group>"; };
+		D12345678901234567890171 /* ToolArguments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/HomeKitMCPCore/ToolArguments.swift; sourceTree = SOURCE_ROOT; };
+		D12345678901234567890173 /* LoopbackEndpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/HomeKitMCPCore/LoopbackEndpoint.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -62,6 +66,8 @@
 				D12345678901234567890130 /* HomeKitSync */,
 				D12345678901234567890156 /* HomeKitSyncTests */,
 				D12345678901234567890131 /* Products */,
+				D12345678901234567890171 /* ToolArguments.swift */,
+				D12345678901234567890173 /* LoopbackEndpoint.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -198,6 +204,8 @@
 				D12345678901234567890143 /* MCPServer.swift in Sources */,
 				D12345678901234567890147 /* HTTPMCPServer.swift in Sources */,
 				D12345678901234567890151 /* HomeKitManager.swift in Sources */,
+				D12345678901234567890170 /* ToolArguments.swift in Sources */,
+				D12345678901234567890172 /* LoopbackEndpoint.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

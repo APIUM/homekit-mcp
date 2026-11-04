@@ -42,9 +42,9 @@ struct ContentView: View {
                         .bold()
                     
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("• GET http://localhost:8080/ (Welcome page)")
-                        Text("• GET http://localhost:8080/events (SSE stream)")
-                        Text("• POST http://localhost:8080/mcp (JSON-RPC)")
+                        Text("• GET http://127.0.0.1:8080/ (Welcome page)")
+                        Text("• GET http://127.0.0.1:8080/events (SSE stream)")
+                        Text("• POST http://127.0.0.1:8080/mcp (JSON-RPC)")
                     }
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -73,6 +73,7 @@ struct ContentView: View {
                             Group {
                                 Text("• accessory_off - Turn off lights/switches, close covers")
                                 Text("• accessory_toggle - Toggle accessory state")
+                                Text("• create_room - Create a room or return the existing one")
                             }
                         }
                     }
@@ -119,10 +120,10 @@ class AppWrapper: ObservableObject {
         httpServer = HTTPMCPServer()
         isRunning = true
         
-        print("HomeKit MCP HTTP Server started on port 8080")
+        print("HomeKit MCP HTTP Server started on 127.0.0.1:8080")
         print("Available endpoints:")
-        print("- GET http://localhost:8080/events (Server-Sent Events)")
-        print("- POST http://localhost:8080/mcp (MCP JSON-RPC)")
+        print("- GET http://127.0.0.1:8080/events (Server-Sent Events)")
+        print("- POST http://127.0.0.1:8080/mcp (MCP JSON-RPC)")
     }
     
     func stopServer() {

@@ -18,19 +18,21 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
     }
     
     private func setupHTTPServer() {
+        guard let port = NWEndpoint.Port(rawValue: port) else {
+            print("Failed to create port \(self.port)")
+            return
+        }
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
+        parameters.requiredInterfaceType = .loopback
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: port)
         
         do {
-            guard let port = NWEndpoint.Port(rawValue: port) else {
-                print("Failed to create port \(self.port)")
-                return
-            }
-            listener = try NWListener(using: parameters, on: port)
+            listener = try NWListener(using: parameters)
             listener?.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    print("HTTP MCP Server listening on port \(self.port)")
+                    print("HTTP MCP Server listening on 127.0.0.1:\(self.port)")
                 case .failed(let error):
                     print("HTTP Server failed: \(error)")
                 default:
@@ -39,6 +41,11 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
             }
             
             listener?.newConnectionHandler = { connection in
+                guard LoopbackEndpoint.isLoopback(connection.endpoint) else {
+                    print("Rejected non-loopback connection from \(connection.endpoint)")
+                    connection.cancel()
+                    return
+                }
                 self.handleNewConnection(connection)
             }
             
@@ -159,7 +166,7 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
             self.sendSSEEvent(connection: connection, event: "server-info", data: [
                 "name": "homekit-mcp-server",
                 "version": "1.0.0",
-                "tools": ["get_all_accessories", "get_all_rooms", "set_accessory_room"]
+                "tools": ["get_all_accessories", "get_all_rooms", "set_accessory_room", "create_room"]
             ])
         })
     }
@@ -225,31 +232,33 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
             return
         }
         
+        let request: MCPRequest
         do {
-            let request = try JSONDecoder().decode(MCPRequest.self, from: jsonData)
-            print("🔧 [MCP] Decoded request ID: \(request.id ?? -1)")
-            
-            let response = handleToolCall(request)
-            print("📤 [MCP] Generated response for ID: \(response.id ?? -1)")
-            
+            request = try JSONDecoder().decode(MCPRequest.self, from: jsonData)
+        } catch {
+            print("❌ [MCP] Error decoding tool call: \(error)")
+            sendMCPResponse(MCPResponse(
+                jsonrpc: "2.0",
+                id: nil,
+                result: nil,
+                error: MCPError(code: -32603, message: "Internal error: \(error.localizedDescription)")
+            ), connection: connection)
+            return
+        }
+        print("🔧 [MCP] Decoded request ID: \(request.id ?? -1)")
+        handleToolCall(request) { response in
+            self.sendMCPResponse(response, connection: connection)
+        }
+    }
+    
+    private func sendMCPResponse(_ response: MCPResponse, connection: NWConnection) {
+        do {
             let responseData = try encoder.encode(response)
-            print("✅ [MCP] Sending response (\(responseData.count) bytes)")
+            print("✅ [MCP] Sending response for ID \(response.id ?? -1) (\(responseData.count) bytes)")
             sendHTTPResponse(connection: connection, body: responseData)
         } catch {
-            print("❌ [MCP] Error processing tool call: \(error)")
-            let errorResponse = MCPResponse(
-                jsonrpc: "2.0", 
-                id: nil, 
-                result: nil, 
-                error: MCPError(code: -32603, message: "Internal error: \(error.localizedDescription)")
-            )
-            
-            do {
-                let errorData = try encoder.encode(errorResponse)
-                sendHTTPResponse(connection: connection, body: errorData)
-            } catch {
-                sendHTTPError(connection: connection, status: 500, message: "Internal Server Error")
-            }
+            print("❌ [MCP] Failed to encode response: \(error)")
+            sendHTTPError(connection: connection, status: 500, message: "Internal Server Error")
         }
     }
     
@@ -259,14 +268,15 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
             return
         }
         
+        let request: MCPRequest
         do {
-            let request = try JSONDecoder().decode(MCPRequest.self, from: jsonData)
-            let response = processMCPRequest(request)
-            let responseData = try encoder.encode(response)
-            
-            sendHTTPResponse(connection: connection, body: responseData)
+            request = try JSONDecoder().decode(MCPRequest.self, from: jsonData)
         } catch {
             sendHTTPError(connection: connection, status: 400, message: "Invalid MCP request: \(error)")
+            return
+        }
+        processMCPRequest(request) { response in
+            self.sendMCPResponse(response, connection: connection)
         }
     }
     
@@ -287,17 +297,17 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
         return jsonBody.data(using: .utf8)
     }
     
-    private func processMCPRequest(_ request: MCPRequest) -> MCPResponse {
+    private func processMCPRequest(_ request: MCPRequest, completion: @escaping (MCPResponse) -> Void) {
         switch request.method {
         case "tools/list":
-            return handleToolsList(request)
+            completion(handleToolsList(request))
         case "tools/call":
-            return handleToolCall(request)
+            handleToolCall(request, completion: completion)
         case "initialize":
-            return handleInitialize(request)
+            completion(handleInitialize(request))
         default:
-            return MCPResponse(jsonrpc: "2.0", id: request.id, result: nil, 
-                              error: MCPError(code: -32601, message: "Method not found"))
+            completion(MCPResponse(jsonrpc: "2.0", id: request.id, result: nil,
+                                   error: MCPError(code: -32601, message: "Method not found")))
         }
     }
     
@@ -360,6 +370,24 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
                         ]
                     ],
                     "required": ["accessory_uuid", "room_uuid"]
+                ]
+            ],
+            [
+                "name": "create_room",
+                "description": "Create a room in a home, or return the existing room with the same name",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "home_uuid": [
+                            "type": "string",
+                            "description": "UUID of the home to create the room in"
+                        ],
+                        "name": [
+                            "type": "string",
+                            "description": "Room name, matched case-insensitively against existing rooms"
+                        ]
+                    ],
+                    "required": ["home_uuid", "name"]
                 ]
             ],
             [
@@ -506,21 +534,32 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
                           result: ["tools": AnyEncodable(tools)], error: nil)
     }
     
-    private func handleToolCall(_ request: MCPRequest) -> MCPResponse {
+    private func handleToolCall(_ request: MCPRequest, completion: @escaping (MCPResponse) -> Void) {
         guard let params = request.params,
               let toolName = params["name"]?.value as? String,
               let arguments = params["arguments"]?.value as? [String: Any] else {
-            return MCPResponse(jsonrpc: "2.0", id: request.id, result: nil,
-                              error: MCPError(code: -32602, message: "Invalid params"))
+            completion(MCPResponse(jsonrpc: "2.0", id: request.id, result: nil,
+                                   error: MCPError(code: -32602, message: "Invalid params")))
+            return
         }
         
+        switch toolName {
+        case "set_accessory_room":
+            handleSetAccessoryRoom(request, arguments: arguments, completion: completion)
+        case "create_room":
+            handleCreateRoom(request, arguments: arguments, completion: completion)
+        default:
+            completion(handleImmediateToolCall(request, toolName: toolName, arguments: arguments))
+        }
+    }
+    
+    private func handleImmediateToolCall(_ request: MCPRequest, toolName: String,
+                                         arguments: [String: Any]) -> MCPResponse {
         switch toolName {
         case "get_all_accessories":
             return handleGetAllAccessories(request)
         case "get_all_rooms":
             return handleGetAllRooms(request)
-        case "set_accessory_room":
-            return handleSetAccessoryRoom(request, arguments: arguments)
         case "get_accessory_by_name":
             return handleGetAccessoryByName(request, arguments: arguments)
         case "get_room_by_name":
@@ -549,14 +588,17 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
         var accessories: [[String: Any]] = []
         
         for home in homeManager.homes {
+            let defaultRoom = home.roomForEntireHome()
             for accessory in home.accessories {
-                let categoryName = getCategoryName(for: accessory.category)
+                let room = accessory.room ?? defaultRoom
                 accessories.append([
                     "name": accessory.name,
-                    "room": accessory.room?.name ?? "No Room",
+                    "room": room.name,
+                    "room_uuid": room.uniqueIdentifier.uuidString,
                     "uuid": accessory.uniqueIdentifier.uuidString,
                     "home": home.name,
-                    "category": categoryName,
+                    "home_uuid": home.uniqueIdentifier.uuidString,
+                    "category": getCategoryName(for: accessory.category),
                     "reachable": accessory.isReachable,
                     "firmware": getAccessoryFirmware(accessory),
                     "serial_number": getAccessorySerialNumber(accessory)
@@ -583,7 +625,7 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
         return MCPResponse(jsonrpc: "2.0", id: request.id, 
                           result: [
                             "content": AnyEncodable(content),
-                            "_meta": AnyEncodable(["accessories": accessories])
+                            "structuredContent": AnyEncodable(["accessories": accessories])
                           ], error: nil)
     }
     
@@ -620,143 +662,146 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
         return "Unknown"
     }
     
-    private func handleGetAllRooms(_ request: MCPRequest) -> MCPResponse {
-        var rooms: [[String: Any]] = []
-        
-        for home in homeManager.homes {
-            for room in home.rooms {
-                rooms.append([
-                    "name": room.name,
-                    "uuid": room.uniqueIdentifier.uuidString,
-                    "home": home.name
-                ])
-            }
-        }
-        
-        let content = [
-            [
-                "type": "text",
-                "text": "Found \(rooms.count) rooms:\n" + 
-                       rooms.map { room in
-                           "• \(room["name"] as! String) (UUID: \(room["uuid"] as! String))"
-                       }.joined(separator: "\n")
-            ]
-        ]
-        
-        return MCPResponse(jsonrpc: "2.0", id: request.id, 
-                          result: [
-                            "content": AnyEncodable(content),
-                            "_meta": AnyEncodable(["rooms": rooms])
-                          ], error: nil)
+    private func homeRooms(_ home: HMHome) -> [HMRoom] {
+        let defaultRoom = home.roomForEntireHome()
+        return [defaultRoom] + home.rooms.filter { $0.uniqueIdentifier != defaultRoom.uniqueIdentifier }
     }
     
-    private func handleSetAccessoryRoom(_ request: MCPRequest, arguments: [String: Any]) -> MCPResponse {
-        print("🔧 [MCP] set_accessory_room called with arguments: \(arguments)")
-        
-        guard let accessoryUUIDString = arguments["accessory_uuid"] as? String,
-              let roomUUIDString = arguments["room_uuid"] as? String,
-              let accessoryUUID = UUID(uuidString: accessoryUUIDString),
-              let roomUUID = UUID(uuidString: roomUUIDString) else {
-            print("❌ [MCP] Invalid UUIDs provided")
-            return MCPResponse(jsonrpc: "2.0", id: request.id, result: nil,
-                              error: MCPError(code: -32602, message: "Invalid UUIDs"))
-        }
-        
-        print("🔍 [MCP] Looking for accessory: \(accessoryUUIDString)")
-        print("🔍 [MCP] Looking for room: \(roomUUIDString)")
-        
-        var foundAccessory: HMAccessory?
-        var foundRoom: HMRoom?
-        var foundHome: HMHome?
+    private func roomInfo(_ room: HMRoom, in home: HMHome) -> [String: Any] {
+        return [
+            "uuid": room.uniqueIdentifier.uuidString,
+            "name": room.name,
+            "home": home.name,
+            "home_uuid": home.uniqueIdentifier.uuidString
+        ]
+    }
+    
+    private func toolResult(_ request: MCPRequest, text: String, structured: [String: Any]) -> MCPResponse {
+        return MCPResponse(jsonrpc: "2.0", id: request.id,
+                           result: [
+                            "content": AnyEncodable([["type": "text", "text": text]]),
+                            "structuredContent": AnyEncodable(structured)
+                           ], error: nil)
+    }
+    
+    private func toolError(_ request: MCPRequest, code: Int, _ message: String) -> MCPResponse {
+        print("❌ [MCP] \(message)")
+        return MCPResponse(jsonrpc: "2.0", id: request.id, result: nil,
+                           error: MCPError(code: code, message: message))
+    }
+    
+    private func handleGetAllRooms(_ request: MCPRequest) -> MCPResponse {
+        var rooms: [[String: Any]] = []
+        var lines: [String] = []
         
         for home in homeManager.homes {
-            print("🏠 [MCP] Searching in home: \(home.name)")
-            if foundAccessory == nil {
-                foundAccessory = home.accessories.first { $0.uniqueIdentifier == accessoryUUID }
-                if foundAccessory != nil {
-                    foundHome = home
-                    print("✅ [MCP] Found accessory: \(foundAccessory?.name ?? "unknown") in home: \(home.name)")
-                }
-            }
-            if foundRoom == nil {
-                foundRoom = home.rooms.first { $0.uniqueIdentifier == roomUUID }
-                if foundRoom != nil {
-                    print("✅ [MCP] Found room: \(foundRoom?.name ?? "unknown") in home: \(home.name)")
-                }
+            let defaultRoomUUID = home.roomForEntireHome().uniqueIdentifier
+            for room in homeRooms(home) {
+                let isDefault = room.uniqueIdentifier == defaultRoomUUID
+                var info = roomInfo(room, in: home)
+                info["is_default"] = isDefault
+                rooms.append(info)
+                let marker = isDefault ? " [default]" : ""
+                lines.append("• \(room.name)\(marker) in \(home.name) (UUID: \(room.uniqueIdentifier.uuidString))")
             }
         }
         
-        guard let accessory = foundAccessory,
-              let room = foundRoom,
-              let home = foundHome else {
-            print("❌ [MCP] Could not find accessory or room")
-            print("❌ [MCP] Accessory found: \(foundAccessory?.name ?? "nil")")
-            print("❌ [MCP] Room found: \(foundRoom?.name ?? "nil")")
-            return MCPResponse(jsonrpc: "2.0", id: request.id, result: nil,
-                              error: MCPError(code: -32603, message: "Accessory or room not found"))
+        return toolResult(request, text: "Found \(rooms.count) rooms:\n" + lines.joined(separator: "\n"),
+                          structured: ["rooms": rooms])
+    }
+    
+    private func handleSetAccessoryRoom(_ request: MCPRequest, arguments: [String: Any],
+                                        completion: @escaping (MCPResponse) -> Void) {
+        let args: SetAccessoryRoomArguments
+        do {
+            args = try SetAccessoryRoomArguments(arguments)
+        } catch {
+            completion(toolError(request, code: -32602, error.localizedDescription))
+            return
         }
         
-        print("🔄 [MCP] Moving \(accessory.name) from \(accessory.room?.name ?? "unknown") to \(room.name)")
-        
-        // Check if accessory is already in target room
-        if accessory.room?.uniqueIdentifier == room.uniqueIdentifier {
-            let moveResult = "ℹ️ \(accessory.name) is already in \(room.name)"
-            print("ℹ️ [MCP] Accessory already in target room")
-            
-            let content = [["type": "text", "text": moveResult]]
-            return MCPResponse(jsonrpc: "2.0", id: request.id, 
-                              result: ["content": AnyEncodable(content)], error: nil)
+        let accessoryUUID = args.accessoryUUID
+        guard let home = homeManager.homes.first(where: { candidate in
+                  candidate.accessories.contains { $0.uniqueIdentifier == accessoryUUID }
+              }),
+              let accessory = home.accessories.first(where: { $0.uniqueIdentifier == accessoryUUID }) else {
+            completion(toolError(request, code: -32603, "Accessory \(accessoryUUID.uuidString) not found"))
+            return
+        }
+        guard let room = homeRooms(home).first(where: { $0.uniqueIdentifier == args.roomUUID }) else {
+            completion(toolError(request, code: -32603,
+                                 "Room \(args.roomUUID.uuidString) not found in home \(home.name)"))
+            return
         }
         
-        // Use async approach with shorter timeout
-        let moveResult: String
-        let group = DispatchGroup()
-        var asyncResult: String = ""
-        var operationCompleted = false
-        
-        print("🔄 [MCP] Starting HomeKit operation...")
-        group.enter()
-        
-        home.assignAccessory(accessory, to: room) { error in
-            defer { 
-                if !operationCompleted {
-                    operationCompleted = true
-                    group.leave() 
-                }
-            }
-            
-            if let error = error {
-                asyncResult = "❌ Failed to move \(accessory.name) to \(room.name): \(error.localizedDescription)"
-                print("❌ [MCP] HomeKit error: \(error.localizedDescription)")
-            } else {
-                asyncResult = "✅ Successfully moved \(accessory.name) to \(room.name)"
-                print("✅ [MCP] Move successful")
-            }
-        }
-        
-        // Wait with shorter timeout to prevent hanging Claude Code
-        let result = group.wait(timeout: .now() + 5.0)
-        if result == .timedOut {
-            moveResult = "⏰ Operation timed out after 5 seconds - HomeKit may be busy. Try again later."
-            print("⏰ [MCP] Operation timed out after 5 seconds")
-            if !operationCompleted {
-                operationCompleted = true
-                // Don't call group.leave() here as we already timed out
-            }
-        } else {
-            moveResult = asyncResult
-        }
-        
-        let content = [
-            [
-                "type": "text",
-                "text": moveResult
-            ]
+        let structured: [String: Any] = [
+            "accessory_uuid": accessory.uniqueIdentifier.uuidString,
+            "room_uuid": room.uniqueIdentifier.uuidString,
+            "room": room.name
         ]
+        let currentRoom = accessory.room ?? home.roomForEntireHome()
+        if currentRoom.uniqueIdentifier == room.uniqueIdentifier {
+            let text = "\(accessory.name) is already in \(room.name)"
+            completion(toolResult(request, text: text, structured: structured))
+            return
+        }
         
-        print("📤 [MCP] Returning result: \(moveResult)")
-        return MCPResponse(jsonrpc: "2.0", id: request.id, 
-                          result: ["content": AnyEncodable(content)], error: nil)
+        print("🔄 [MCP] Moving \(accessory.name) from \(currentRoom.name) to \(room.name)")
+        home.assignAccessory(accessory, to: room) { error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    let message = "Failed to move \(accessory.name) to \(room.name): \(error.localizedDescription)"
+                    completion(self.toolError(request, code: -32603, message))
+                } else {
+                    let text = "Moved \(accessory.name) to \(room.name)"
+                    completion(self.toolResult(request, text: text, structured: structured))
+                }
+            }
+        }
+    }
+    
+    private func handleCreateRoom(_ request: MCPRequest, arguments: [String: Any],
+                                  completion: @escaping (MCPResponse) -> Void) {
+        let args: CreateRoomArguments
+        do {
+            args = try CreateRoomArguments(arguments)
+        } catch {
+            completion(toolError(request, code: -32602, error.localizedDescription))
+            return
+        }
+        
+        guard let home = homeManager.homes.first(where: { $0.uniqueIdentifier == args.homeUUID }) else {
+            completion(toolError(request, code: -32603, "Home \(args.homeUUID.uuidString) not found"))
+            return
+        }
+        
+        let key = ToolArguments.roomNameKey(args.name)
+        if let existing = homeRooms(home).first(where: { ToolArguments.roomNameKey($0.name) == key }) {
+            var info = roomInfo(existing, in: home)
+            info["created"] = false
+            completion(toolResult(request, text: "Room \(existing.name) already exists in \(home.name)",
+                                  structured: ["room": info]))
+            return
+        }
+        
+        home.addRoom(withName: args.name) { room, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    let message = "Failed to create room \(args.name): \(error.localizedDescription)"
+                    completion(self.toolError(request, code: -32603, message))
+                    return
+                }
+                guard let room = room else {
+                    completion(self.toolError(request, code: -32603,
+                                              "HomeKit returned no room for \(args.name)"))
+                    return
+                }
+                var info = self.roomInfo(room, in: home)
+                info["created"] = true
+                completion(self.toolResult(request, text: "Created room \(room.name) in \(home.name)",
+                                           structured: ["room": info]))
+            }
+        }
     }
     
     private func handleGetAccessoryByName(_ request: MCPRequest, arguments: [String: Any]) -> MCPResponse {
@@ -1408,6 +1453,7 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
                 <li><code>get_all_accessories</code> - List all HomeKit accessories</li>
                 <li><code>get_all_rooms</code> - List all HomeKit rooms</li>
                 <li><code>set_accessory_room</code> - Move accessory to different room</li>
+                <li><code>create_room</code> - Create a room, or return the existing one with that name</li>
             </ul>
             
             <h2>Claude Code Configuration:</h2>
@@ -1415,7 +1461,7 @@ class HTTPMCPServer: NSObject, HMHomeManagerDelegate {
               "mcpServers": {
                 "homekit": {
                   "type": "http",
-                  "url": "http://localhost:8080/mcp"
+                  "url": "http://127.0.0.1:8080/mcp"
                 }
               }
             }</code></pre>

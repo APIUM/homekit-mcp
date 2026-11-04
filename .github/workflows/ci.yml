@@ -2,70 +2,71 @@ name: CI
 
 on:
   push:
-    branches: [ main, master, develop ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [ "**" ]
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * *"  # Daily at midnight UTC
 
 jobs:
   lint:
     name: Lint
     runs-on: macos-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Install SwiftLint
       run: brew install swiftlint
-    
+
     - name: Run SwiftLint
       run: make lint
 
   test-macos:
     name: Test (macOS)
     runs-on: macos-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
-    # Use system Swift on macOS
+
     - name: Run CI Tests
       run: |
-        echo "Swift version:"
         swift --version
-        echo "Running tests..."
         make test-ci
-      
+
     - name: Validate Swift Package
       run: |
         swift package describe
         swift build
 
-
-  build-validation:
-    name: Build Validation
+  build-app:
+    name: Build app (Mac Catalyst)
     runs-on: macos-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Setup Xcode
       uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: latest-stable
-        
-    - name: Validate Xcode Project
-      run: |
-        xcodebuild -list
-        xcodebuild -project HomeKitSync.xcodeproj -scheme HomeKitSync -destination 'platform=macOS,variant=Mac Catalyst' -dry-run
-      continue-on-error: true  # HomeKit signing issues expected in CI
-      
-    - name: Check Project Structure
-      run: |
-        ls -la
-        find . -name "*.swift" | head -10
+
+    - name: Build
+      run: >-
+        xcodebuild build
+        -project HomeKitSync.xcodeproj
+        -scheme HomeKitSync
+        -destination 'platform=macOS,variant=Mac Catalyst'
+        CODE_SIGNING_ALLOWED=NO
+        CODE_SIGNING_REQUIRED=NO
+
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run unit tests
+      run: python3 -m unittest discover -s scripts/tests -v
