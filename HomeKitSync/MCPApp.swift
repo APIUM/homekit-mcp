@@ -24,12 +24,12 @@ struct ContentView: View {
             
             HStack {
                 Text("Status:")
-                Text(server.isRunning ? "Running" : "Stopped")
-                    .foregroundColor(server.isRunning ? .green : .red)
+                Text(statusText)
+                    .foregroundColor(statusColor)
                     .bold()
             }
             
-            if server.isRunning {
+            if server.status == .ready {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Server Details:")
                         .font(.headline)
@@ -56,24 +56,8 @@ struct ContentView: View {
                     
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
-                            Group {
-                                Text("• get_all_accessories - List all HomeKit accessories")
-                                Text("• get_all_rooms - List all HomeKit rooms")
-                                Text("• set_accessory_room - Move accessory to different room")
-                                Text("• get_accessory_by_name - Find accessory by name")
-                                Text("• get_room_by_name - Find room by name")
-                            }
-                            Group {
-                                Text("• set_accessory_room_by_name - Move accessory by names")
-                                Text("• rename_accessory - Rename a HomeKit accessory")
-                                Text("• rename_room - Rename a HomeKit room")
-                                Text("• get_room_accessories - Get accessories in a room")
-                                Text("• accessory_on - Turn on lights/switches, open covers")
-                            }
-                            Group {
-                                Text("• accessory_off - Turn off lights/switches, close covers")
-                                Text("• accessory_toggle - Toggle accessory state")
-                                Text("• create_room - Create a room or return the existing one")
+                            ForEach(ToolCatalog.all, id: \.name) { tool in
+                                Text("• \(tool.name) - \(tool.description)")
                             }
                         }
                     }
@@ -104,42 +88,52 @@ struct ContentView: View {
         }
         .padding()
     }
+    
+    private var statusText: String {
+        switch server.status {
+        case .starting:
+            return "Starting"
+        case .ready:
+            return "Running on 127.0.0.1:\(HTTPMCPServer.port)"
+        case .failed(let reason):
+            return "Failed: \(reason)"
+        case .stopped:
+            return "Stopped"
+        }
+    }
+    
+    private var statusColor: Color {
+        switch server.status {
+        case .ready:
+            return .green
+        case .starting:
+            return .orange
+        case .failed, .stopped:
+            return .red
+        }
+    }
 }
 
-class AppWrapper: ObservableObject {
-    @Published var isRunning = false
-    private var httpServer: HTTPMCPServer?
+final class AppWrapper: ObservableObject {
+    @Published private(set) var status: ServerStatus = .stopped
+    private var server: HTTPMCPServer?
+    
+    var isRunning: Bool {
+        status == .starting || status == .ready
+    }
     
     init() {
-        startServer()
-    }
-    
-    func startServer() {
-        guard !isRunning else { return }
-        
-        httpServer = HTTPMCPServer()
-        isRunning = true
-        
-        print("HomeKit MCP HTTP Server started on 127.0.0.1:8080")
-        print("Available endpoints:")
-        print("- GET http://127.0.0.1:8080/events (Server-Sent Events)")
-        print("- POST http://127.0.0.1:8080/mcp (MCP JSON-RPC)")
-    }
-    
-    func stopServer() {
-        guard isRunning else { return }
-        
-        httpServer = nil
-        isRunning = false
-        
-        print("HomeKit MCP HTTP Server stopped")
+        server = HTTPMCPServer { [weak self] status in
+            self?.status = status
+        }
+        server?.start()
     }
     
     func toggleServer() {
         if isRunning {
-            stopServer()
+            server?.stop()
         } else {
-            startServer()
+            server?.start()
         }
     }
 }
