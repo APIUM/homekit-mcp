@@ -28,6 +28,7 @@ CREATE_AND_MOVE = "create_room+move"
 NO_CHANGE = "none"
 SKIP = "skip"
 ACTIONABLE = (MOVE, CREATE_AND_MOVE)
+NOT_BRIDGED = "not bridged by Home Assistant"
 
 PLAN_FIELDS = [
     "accessory_uuid",
@@ -119,7 +120,6 @@ class HomeState:
 class ApplyResult:
     moved: List[str] = field(default_factory=list)
     created_rooms: List[str] = field(default_factory=list)
-    skipped: List[str] = field(default_factory=list)
     failures: List[str] = field(default_factory=list)
 
 
@@ -131,7 +131,7 @@ def unmanaged_reason(accessory: Accessory) -> Optional[str]:
     if accessory.serial == HA_BRIDGE_SERIAL:
         return "Home Assistant bridge"
     if accessory.bridge_serial != HA_BRIDGE_SERIAL:
-        return "not bridged by Home Assistant"
+        return NOT_BRIDGED
     if not ENTITY_ID_PATTERN.fullmatch(accessory.serial):
         return "serial is not a Home Assistant entity id"
     return None
@@ -350,7 +350,7 @@ def label(row: PlanRow) -> str:
     return f"{row.name}{serial} ({row.accessory_uuid})"
 
 
-def apply_rows(client: HomeKitClient, state: HomeState, home_uuid: str, rows: List[PlanRow]) -> ApplyResult:
+def apply_rows(client: HomeKitClient, state: HomeState, rows: List[PlanRow]) -> ApplyResult:
     result = ApplyResult()
     ready_rooms: Dict[Tuple[str, str], str] = {}
     failed_rooms: Dict[Tuple[str, str], str] = {}
@@ -358,22 +358,6 @@ def apply_rows(client: HomeKitClient, state: HomeState, home_uuid: str, rows: Li
         if row.action not in ACTIONABLE:
             continue
         accessory = state.accessory(row.accessory_uuid)
-        if accessory is None:
-            result.skipped.append(f"{label(row)}: accessory no longer exists")
-            continue
-        if accessory.home_uuid != home_uuid:
-            result.skipped.append(f"{label(row)}: accessory is in another home ({accessory.home})")
-            continue
-        reason = unmanaged_reason(accessory)
-        if reason:
-            result.skipped.append(f"{label(row)}: not managed ({reason})")
-            continue
-        if room_key(accessory.room) == room_key(row.target_room):
-            result.skipped.append(f"{label(row)}: already in {accessory.room}")
-            continue
-        if room_key(accessory.room) != room_key(row.current_room):
-            result.skipped.append(f"{label(row)}: room changed since the plan was made (now {accessory.room})")
-            continue
 
         existing = state.find_room(accessory.home_uuid, row.target_room)
         key = (accessory.home_uuid, room_key(row.target_room))
@@ -453,15 +437,6 @@ def write_plan(output_dir: Path, rows: List[PlanRow]) -> Path:
     return path
 
 
-def load_plan(path: Path) -> List[PlanRow]:
-    rows = read_csv(path, ["accessory_uuid", "current_room", "target_room", "action"])
-    plan = [PlanRow(**{name: (row.get(name) or "") for name in PLAN_FIELDS}) for row in rows]
-    for number, row in enumerate(plan, start=1):
-        if row.action in ACTIONABLE and not row.target_room.strip():
-            raise SyncError(f"{path} row {number} ({row.accessory_uuid}): target_room is empty for a {row.action} row")
-    return plan
-
-
 def write_snapshot(output_dir: Path, accessories: List[Accessory]) -> Path:
     path = artifact_path(output_dir, "snapshot")
     write_csv(
@@ -500,13 +475,11 @@ def apply_and_report(
         print("Nothing to apply.")
         return 0
     print(f"Wrote snapshot CSV: {write_snapshot(output_dir, state.managed(home_uuid))}")
-    result = apply_rows(client, state, home_uuid, rows)
+    result = apply_rows(client, state, rows)
     for line in result.created_rooms:
         print(f"Created room: {line}")
     for line in result.moved:
         print(f"Moved: {line}")
-    for line in result.skipped:
-        print(f"Skipped: {line}")
     print(f"Moves applied: {len(result.moved)}")
     if result.failures:
         print(f"Failures: {len(result.failures)}", file=sys.stderr)
@@ -516,17 +489,23 @@ def apply_and_report(
     return 0
 
 
+def print_no_managed_hint(state: HomeState, home_uuid: str, rows: List[PlanRow]) -> None:
+    print(f"No Home Assistant accessories found in {state.homes()[home_uuid]}.")
+    print(
+        "Check that the Home Assistant bridge is paired in the Home app, that "
+        "'scripts/homekitctl.py accessories' shows entity ids as serial numbers, and that --home names the right home."
+    )
+    not_bridged = sum(1 for row in rows if row.reason == NOT_BRIDGED)
+    if not_bridged:
+        print(
+            f"{not_bridged} accessories were skipped as '{NOT_BRIDGED}': the app did not report them "
+            f"behind an accessory with serial number {HA_BRIDGE_SERIAL}."
+        )
+
+
 def run(args: argparse.Namespace, env: Dict[str, str]) -> int:
     client = HomeKitClient(env.get("HOMEKIT_MCP_URL") or DEFAULT_HOMEKIT_URL)
     output_dir = Path(args.output_dir)
-
-    if args.apply_plan:
-        rows = load_plan(Path(args.apply_plan))
-        state = client.read_state()
-        home_uuid = select_home(state, args.home)
-        print(f"Loaded plan CSV: {args.apply_plan} ({len(rows)} rows)")
-        print(f"Home: {state.homes()[home_uuid]}")
-        return apply_and_report(client, state, home_uuid, rows, output_dir)
 
     if args.restore:
         snapshot = read_csv(Path(args.restore), ["accessory_uuid", "room"])
@@ -545,8 +524,11 @@ def run(args: argparse.Namespace, env: Dict[str, str]) -> int:
 
     print(f"Home: {state.homes()[home_uuid]}")
     print_plan(rows, write_plan(output_dir, rows))
+    if not args.restore and not state.managed(home_uuid):
+        print_no_managed_hint(state, home_uuid, rows)
+        return 0
     if not args.apply:
-        print("Dry run only. Re-run with --apply, or pass the plan CSV to --apply-plan.")
+        print("Dry run only. Re-run with --apply to make these changes.")
         return 0
     return apply_and_report(client, state, home_uuid, rows, output_dir)
 
@@ -569,9 +551,7 @@ def parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
             "Exit codes: 0 success or nothing to do, 1 error, 2 some changes failed."
         ),
     )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--apply-plan", metavar="PLAN_CSV", help="Apply the move rows of an existing plan CSV.")
-    mode.add_argument(
+    parser.add_argument(
         "--restore",
         metavar="SNAPSHOT_CSV",
         help="Plan moves back to the rooms in a snapshot CSV (matched by accessory UUID).",

@@ -1,6 +1,8 @@
 # HomeKit MCP Server Makefile
 
-.PHONY: build test test-ci lint lint-fix install-deps clean cli
+ENV_FILE ?= $(HOME)/.config/homekit-room-sync.env
+
+.PHONY: build test test-ci lint lint-fix install-deps clean cli run help sync sync-apply
 
 # Build the project
 build:
@@ -18,6 +20,14 @@ test-ci:
 # Run the lightweight CLI against the local HTTP server
 cli:
 	python3 scripts/homekitctl.py --help
+
+# Dry run of the Home Assistant area to Home room sync
+sync:
+	python3 scripts/manage_homekit_rooms.py --env-file "$(ENV_FILE)"
+
+# Apply the Home Assistant area to Home room sync
+sync-apply:
+	python3 scripts/manage_homekit_rooms.py --env-file "$(ENV_FILE)" --apply
 
 # Install SwiftLint (requires Homebrew)
 install-deps:
@@ -57,6 +67,8 @@ help:
 	@echo "  test         - Run unit tests (requires HomeKit/Mac Catalyst)"
 	@echo "  test-ci      - Run CI-friendly tests (no dependencies)"
 	@echo "  cli          - Show Python CLI help for the HTTP wrapper"
+	@echo "  sync         - Dry run of the Home Assistant room sync (ENV_FILE=$(ENV_FILE))"
+	@echo "  sync-apply   - Apply the Home Assistant room sync"
 	@echo "  lint         - Run SwiftLint checks"
 	@echo "  lint-fix     - Fix SwiftLint issues automatically"
 	@echo "  install-deps - Install SwiftLint via Homebrew"

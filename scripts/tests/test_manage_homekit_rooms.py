@@ -80,11 +80,12 @@ def path_after(output: str, prefix: str) -> str:
     raise AssertionError(f"No line starting with {prefix!r} in output:\n{output}")
 
 
-def edit_plan(path: str, changes: dict) -> None:
-    rows = read_rows(path)
-    for row in rows:
-        row.update(changes.get(row["accessory_uuid"], {}))
-    manage_homekit_rooms.write_csv(Path(path), manage_homekit_rooms.PLAN_FIELDS, rows)
+def write_snapshot(path: Path, rows: list) -> None:
+    manage_homekit_rooms.write_csv(path, manage_homekit_rooms.SNAPSHOT_FIELDS, rows)
+
+
+def snapshot_row(uuid: str, room_name: str) -> dict:
+    return {"accessory_uuid": uuid, "name": "", "serial": "", "home": "Home", "room": room_name}
 
 
 class RoomSyncTestCase(unittest.TestCase):
@@ -223,13 +224,38 @@ class PlanTests(RoomSyncTestCase):
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as raised:
             manage_homekit_rooms.main(["--help"], {})
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("--apply-plan", out.getvalue())
+        self.assertIn("--restore", out.getvalue())
+        self.assertNotIn("--apply-plan", out.getvalue())
 
     def test_usage_error_exits_1(self):
         with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as raised:
-            manage_homekit_rooms.main(["--apply-plan", "a.csv", "--restore", "b.csv"], {})
+            manage_homekit_rooms.main(["--apply-plan", "a.csv"], {})
         self.assertEqual(raised.exception.code, 1)
-        self.assertIn("not allowed with argument", err.getvalue())
+        self.assertIn("unrecognized arguments: --apply-plan", err.getvalue())
+
+    def test_no_managed_accessories_explains_why(self):
+        for item in self.homekit.accessories:
+            item["bridge_serial_number"] = None
+        code, out, err = self.run_script()
+        self.assertEqual(code, 0, err)
+        self.assertIn("No Home Assistant accessories found in Home.", out)
+        self.assertIn("homekitctl.py accessories", out)
+        self.assertIn("11 accessories were skipped as 'not bridged by Home Assistant'", out)
+        self.assertNotIn("Dry run only", out)
+        self.assertEqual(self.ha.requests, [])
+
+    def test_no_managed_accessories_without_bridge_skips_omits_bridge_hint(self):
+        self.homekit.accessories = [
+            accessory("U1", "Unread 1", "light.one", "Office"),
+            accessory("U2", "Unread 2", "light.two", "Kitchen"),
+        ]
+        for item in self.homekit.accessories:
+            item["serial_number"] = None
+        code, out, err = self.run_script("--apply")
+        self.assertEqual(code, 0, err)
+        self.assertIn("No Home Assistant accessories found in Home.", out)
+        self.assertNotIn("skipped as 'not bridged", out)
+        self.assertEqual(self.homekit.mutating_calls(), [])
 
     def test_env_file_supplies_configuration(self):
         env_file = Path(self.output_dir) / "room-sync.env"
@@ -319,57 +345,11 @@ class ApplyTests(RoomSyncTestCase):
         self.assertEqual(self.homekit.room_of("A1"), "Kitchen")
         self.assertIn("Moves applied: 3", out)
 
-    def test_apply_plan_skips_stale_rows(self):
-        code, out, err = self.run_script()
-        self.assertEqual(code, 0, err)
-        plan_path = path_after(out, "Wrote plan CSV:")
-
-        self.homekit.accessories.remove(self.homekit.accessory_by_uuid("A2"))
-        self.homekit.move("A1", "Kitchen")
-        self.homekit.move("A10", "living room")
-
-        code, out, err = self.run_script("--apply-plan", plan_path)
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.creates(), ["Bedroom"])
-        self.assertEqual(set(self.moves()), {"A3", "A9"})
-        self.assertIn("Skipped: Blinds [cover.bedroom_blinds] (A2): accessory no longer exists", out)
-        self.assertIn("Skipped: Kitchen Log Light [light.kitchen_log_light] (A1): already in Kitchen", out)
-        self.assertIn("(A10): room changed since the plan was made (now living room)", out)
-        self.assertEqual(self.homekit.room_of("A10"), "living room")
-
-    def test_apply_plan_never_moves_unmanaged_accessories(self):
-        code, out, _ = self.run_script()
-        plan_path = path_after(out, "Wrote plan CSV:")
-        edit_plan(
-            plan_path,
-            {
-                "A5": {"action": "move", "target_room": "Office"},
-                "A8": {"action": "move", "target_room": "Kitchen"},
-                "A11": {"action": "move", "target_room": "Office"},
-            },
-        )
-        before = self.rooms_of(["A5", "A8", "A11"])
-        code, out, err = self.run_script("--apply-plan", plan_path)
-        self.assertEqual(code, 0, err)
-        self.assertIn("(A5): not managed (not bridged by Home Assistant)", out)
-        self.assertIn("(A8): not managed (Home Assistant bridge)", out)
-        self.assertIn("(A11): not managed (not bridged by Home Assistant)", out)
-        self.assertEqual(self.rooms_of(before), before)
-
-    def test_apply_plan_rejects_empty_target_room(self):
-        code, out, _ = self.run_script()
-        plan_path = path_after(out, "Wrote plan CSV:")
-        edit_plan(plan_path, {"A1": {"target_room": "  "}})
-        code, _, err = self.run_script("--apply-plan", plan_path)
-        self.assertEqual(code, 1)
-        self.assertIn("(A1): target_room is empty for a move row", err)
-        self.assertEqual(self.homekit.mutating_calls(), [])
-
-    def test_apply_plan_in_legacy_encoding_is_an_error(self):
-        plan_path = Path(self.output_dir) / "latin1-plan.csv"
-        header = ",".join(manage_homekit_rooms.PLAN_FIELDS)
-        plan_path.write_bytes(f"{header}\nA1,Caf\xe9,light.kitchen_log_light,Home,Office,Kitchen,move,\n".encode("latin-1"))
-        code, _, err = self.run_script("--apply-plan", str(plan_path))
+    def test_restore_in_legacy_encoding_is_an_error(self):
+        snapshot = Path(self.output_dir) / "latin1-snapshot.csv"
+        header = ",".join(manage_homekit_rooms.SNAPSHOT_FIELDS)
+        snapshot.write_bytes(f"{header}\nA1,Caf\xe9,light.kitchen_log_light,Home,Kitchen\n".encode("latin-1"))
+        code, _, err = self.run_script("--restore", str(snapshot), "--apply")
         self.assertEqual(code, 1)
         self.assertIn('save it as "CSV UTF-8"', err)
         self.assertNotIn("Traceback", err)
@@ -382,21 +362,20 @@ class ApplyTests(RoomSyncTestCase):
         self.assertEqual(code, 1)
         self.assertIn("is not UTF-8 text", err)
 
-    def test_apply_plan_accepts_utf8_bom(self):
-        code, out, _ = self.run_script()
-        plan_path = Path(path_after(out, "Wrote plan CSV:"))
-        plan_path.write_text("\ufeff" + plan_path.read_text(encoding="utf-8"), encoding="utf-8")
-        code, _, err = self.run_script("--apply-plan", str(plan_path))
+    def test_restore_accepts_utf8_bom(self):
+        snapshot = Path(self.output_dir) / "bom-snapshot.csv"
+        write_snapshot(snapshot, [snapshot_row("A1", "Kitchen")])
+        snapshot.write_text("\ufeff" + snapshot.read_text(encoding="utf-8"), encoding="utf-8")
+        code, _, err = self.run_script("--restore", str(snapshot), "--apply")
         self.assertEqual(code, 0, err)
         self.assertEqual(self.homekit.room_of("A1"), "Kitchen")
 
-    def test_apply_plan_matches_lowercased_uuids(self):
-        code, out, _ = self.run_script()
-        plan_path = path_after(out, "Wrote plan CSV:")
-        edit_plan(plan_path, {uuid: {"accessory_uuid": uuid.lower()} for uuid in MANAGED})
-        code, _, err = self.run_script("--apply-plan", plan_path)
+    def test_restore_matches_lowercased_uuids(self):
+        snapshot = Path(self.output_dir) / "lower-snapshot.csv"
+        write_snapshot(snapshot, [snapshot_row("a1", "Kitchen")])
+        code, _, err = self.run_script("--restore", str(snapshot), "--apply")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.homekit.room_of("A1"), "Kitchen")
+        self.assertEqual(self.moves(), {"A1": "R-KITCHEN"})
 
     def test_snapshot_restore_round_trip_leaves_unmanaged_alone(self):
         before = self.rooms_of(MANAGED)
@@ -466,22 +445,6 @@ class HomeSelectionTests(RoomSyncTestCase):
         self.assertEqual(list(plan), ["H1"])
         self.assertEqual(plan["H1"]["action"], "create_room+move")
         self.assertEqual(plan["H1"]["target_room"], "Kitchen")
-
-    def test_apply_plan_honours_home(self):
-        code, out, err = self.run_script("--home", "Home")
-        self.assertEqual(code, 0, err)
-        plan_path = path_after(out, "Wrote plan CSV:")
-        edit_plan(plan_path, {"A1": {"accessory_uuid": "H1", "current_room": "Deck"}})
-
-        code, _, err = self.run_script("--apply-plan", plan_path)
-        self.assertEqual(code, 1)
-        self.assertIn("--home", err)
-
-        code, out, err = self.run_script("--apply-plan", plan_path, "--home", "Home")
-        self.assertEqual(code, 0, err)
-        self.assertIn("(H1): accessory is in another home (Beach House)", out)
-        self.assertEqual(self.homekit.room_of("H1"), "Deck")
-        self.assertEqual(self.homekit.room_of("A2"), "Bedroom")
 
     def test_restore_honours_home(self):
         snapshot = Path(self.output_dir) / "snapshot.csv"

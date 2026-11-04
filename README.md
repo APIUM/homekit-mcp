@@ -1,9 +1,7 @@
-# HomeKit MCP ... and CLI ... and Room Plan/Apply script
+# HomeKit MCP ... and CLI ... and Room Sync script
 
-[![GitHub Release](https://img.shields.io/github/v/release/TimCinel/homekit-mcp?style=for-the-badge)](https://github.com/TimCinel/homekit-mcp/releases)
-[![GitHub Activity](https://img.shields.io/github/commit-activity/m/TimCinel/homekit-mcp?style=for-the-badge)](https://github.com/TimCinel/homekit-mcp/commits/main)
-[![License](https://img.shields.io/github/license/TimCinel/homekit-mcp?style=for-the-badge)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/TimCinel/homekit-mcp/ci.yml?style=for-the-badge&label=CI)](https://github.com/TimCinel/homekit-mcp/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/APIUM/homekit-mcp/ci.yml?style=for-the-badge&label=CI)](https://github.com/APIUM/homekit-mcp/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 
 HTTP-based Model Context Protocol (MCP) server for HomeKit. Provides tools to list and manage HomeKit accessories and rooms.
 
@@ -17,17 +15,19 @@ This is implemented as a macOS app rather than a CLI tool because HomeKit requir
 
 - macOS 13.0+ with HomeKit setup
 - Xcode (with Command Line Tools)
-- Apple ID (free tier sufficient for development)
+- A paid Apple Developer Program team: the HomeKit capability cannot be signed for a Mac app with a free personal team
 - HomeKit accessories configured in the Home app
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/TimCinel/HomeKitSync.git
-cd HomeKitSync
+git clone https://github.com/APIUM/homekit-mcp.git
+cd homekit-mcp
 make build
 make run
 ```
+
+The project is set to team `BQPKG77L55` and bundle id `io.tynan.homekitmcp`. To build under another team, open `HomeKitSync.xcodeproj` and, under Signing & Capabilities, change the Team and the Bundle Identifier of the `HomeKitSync` target (and its test target) to your own.
 
 The server will start on `http://127.0.0.1:8080` and the app window shows its status (Starting, Running on 127.0.0.1:8080, Failed with the reason such as the port being in use, or Stopped). It listens on the loopback interface only and refuses browser requests, so clients must run on the same Mac (see [Request rules](#request-rules)).
 
@@ -92,19 +92,21 @@ How it works:
 - It reads accessories and rooms from the HomeKit MCP app, matches rooms by name ignoring case and surrounding spaces, creates missing rooms and moves accessories by UUID, so duplicate accessory names are safe.
 - Dry run by default: it writes a plan CSV and changes nothing until you ask it to.
 
+Everything rests on HomeKit's Serial Number characteristic. Apple has deprecated it with no replacement, so check it still works before relying on the sync (step 1 of the workflow).
+
 It uses only the Python 3.9+ standard library.
 
 #### Mac prerequisites
 
 1. Xcode with Command Line Tools.
-2. Open `HomeKitSync.xcodeproj`, select the `HomeKitSync` target, and under Signing & Capabilities pick your own Team (a free personal team works). Keep the HomeKit capability enabled.
+2. Open `HomeKitSync.xcodeproj` and check Signing & Capabilities for the `HomeKitSync` target: a paid Apple Developer Program team and the HomeKit capability (see [Quick Start](#quick-start) to use your own team and bundle id).
 3. Build and run (`make build && make run`, or Run in Xcode). On first launch macOS asks for permission to access your Home data: allow it. If you declined, enable it in System Settings > Privacy & Security > HomeKit.
-4. The Home app on the same Apple ID has the Home Assistant HomeKit Bridge paired.
+4. Pair the "Home Assistant" bridge from the Home app on your iPhone (Add Accessory, then enter or scan the code from Home Assistant's "HomeKit Pairing" notification), using the same Apple ID as the Mac.
 5. Keep the app running while the script runs. It listens on `127.0.0.1:8080` only, so run the script on the same Mac.
 
 #### Home Assistant access token
 
-In Home Assistant, signed in as an administrator, open your profile, Security tab, and under Long-lived access tokens choose Create token. The token must belong to an admin user: Home Assistant only lets admins render templates through the REST API, and a non-admin token is rejected with HTTP 401. Copy it once; Home Assistant does not show it again. The script sends it only to `HASS_SERVER`, never follows redirects (so the token cannot be forwarded to another host), and never prints it.
+In Home Assistant, signed in as an administrator, open your profile, Security tab, and under Long-lived access tokens choose Create token. The token must belong to an admin user: Home Assistant only lets admins render templates through the REST API, and a non-admin token is rejected with HTTP 401. Copy it once; Home Assistant does not show it again. The script sends it only to `HASS_SERVER`, never follows redirects or system proxies (so the token cannot be forwarded to another host), and never prints it.
 
 #### Configuration
 
@@ -114,14 +116,32 @@ In Home Assistant, signed in as an administrator, open your profile, Security ta
 | `HASS_TOKEN` | Long-lived access token of a Home Assistant admin user |
 | `HOMEKIT_MCP_URL` | HomeKit MCP app URL, default `http://127.0.0.1:8080` |
 
-Set them in the environment, or put `KEY=VALUE` lines in a file and pass `--env-file PATH` (values in the file win over the environment). Keep that file out of git and readable only by you (`chmod 600 ~/.config/homekit-room-sync.env`).
+Set them in the environment, or put `KEY=VALUE` lines in a file and pass `--env-file PATH` (values in the file win over the environment). The `make sync` targets read `~/.config/homekit-room-sync.env`. Keep that file out of git and readable only by you:
+
+```
+$ mkdir -p ~/.config
+$ cat > ~/.config/homekit-room-sync.env <<'EOF'
+HASS_SERVER=http://homeassistant.local:8123
+HASS_TOKEN=<long-lived token>
+EOF
+$ chmod 600 ~/.config/homekit-room-sync.env
+```
 
 #### Workflow
 
-1. Dry run. Nothing in Home changes:
+1. Check serial numbers. Before the first sync, list the accessories and confirm that the `S/N` of each accessory from the Home Assistant bridge is its entity id (for example `S/N: light.kitchen_log_light`):
 
    ```
-   $ scripts/manage_homekit_rooms.py --env-file ~/.config/homekit-room-sync.env
+   $ scripts/homekitctl.py accessories
+   ```
+
+   If they show `unknown` or something else, the sync cannot work on this macOS version; it will skip those accessories.
+
+2. Dry run. Nothing in Home changes:
+
+   ```
+   $ make sync
+   python3 scripts/manage_homekit_rooms.py --env-file "/Users/you/.config/homekit-room-sync.env"
    Home: Home
      move             Kitchen Log Light [light.kitchen_log_light] (6F1C...): Default Room -> Kitchen
      create_room+move Bedroom Blinds [cover.bedroom_blinds] (0B7A...): Default Room -> Bedroom
@@ -131,25 +151,32 @@ Set them in the environment, or put `KEY=VALUE` lines in a file and pass `--env-
    Rooms to create: Bedroom
    Already in place: 44
    Skipped (see reason column): 2
-   Dry run only. Re-run with --apply, or pass the plan CSV to --apply-plan.
+   Dry run only. Re-run with --apply to make these changes.
    ```
 
-2. Read the plan CSV. Columns: `accessory_uuid`, `name`, `serial`, `home`, `current_room`, `target_room`, `action`, `reason`. Actions:
+   If the home has no managed accessories, it says `No Home Assistant accessories found in <home>` with a hint (bridge not paired, serial numbers unreadable, or the wrong `--home`).
+
+3. Read the plan CSV. It stays in `artifacts/` as a record of what was planned. Columns: `accessory_uuid`, `name`, `serial`, `home`, `current_room`, `target_room`, `action`, `reason`. Actions:
    - `move`: move into an existing room.
    - `create_room+move`: the room does not exist in Home yet; it is created once, then the accessory is moved.
    - `none`: already in the right room.
    - `skip`: not managed, with the reason (the bridge itself, not bridged by Home Assistant, not a valid entity id, entity not found in Home Assistant, or no area in Home Assistant).
 
-3. Apply, either by planning again and applying straight away, or by applying the plan you reviewed:
+   To change where an accessory goes, change its area in Home Assistant and run the dry run again.
+
+4. Apply. This plans again from live data and applies straight away:
 
    ```
-   $ scripts/manage_homekit_rooms.py --apply
-   $ scripts/manage_homekit_rooms.py --apply-plan artifacts/homekit-plan-20261104-213000.csv
+   $ make sync-apply
    ```
 
-   `--apply-plan` re-reads Home first and skips rows whose accessory no longer exists, is not managed, is in another home, is already in the target room, or was moved somewhere else since the plan was written. You can edit `target_room` in a plan before applying it; only `move` and `create_room+move` rows are applied, and they must have a `target_room`. Plans edited in Excel or Numbers and saved as UTF-8 CSV work.
+`ENV_FILE=path` overrides the env file for both targets (`make sync ENV_FILE=~/other.env`). Run the script directly for the other options:
 
-If the account has several homes, pass `--home NAME` (to the dry run, `--apply-plan` and `--restore` alike) unless exactly one home has Home Assistant accessories. Plans and snapshots go to `artifacts/` in the repository (git-ignored); change it with `--output-dir`.
+```
+$ scripts/manage_homekit_rooms.py --env-file ~/.config/homekit-room-sync.env [--apply] [--home NAME] [--output-dir DIR]
+```
+
+If the account has several homes, pass `--home NAME` (to sync and `--restore` alike) unless exactly one home has Home Assistant accessories. Plans and snapshots go to `artifacts/` in the repository (git-ignored); change it with `--output-dir`.
 
 Exit codes: `0` success or nothing to change, `1` error (bad arguments, Home Assistant or the app unreachable, token rejected, no homes visible, bad input), `2` some moves or room creations failed (they are listed on stderr; the rest were applied).
 
@@ -162,16 +189,19 @@ $ scripts/manage_homekit_rooms.py --restore artifacts/homekit-snapshot-20261104-
 $ scripts/manage_homekit_rooms.py --restore artifacts/homekit-snapshot-20261104-213005.csv --apply
 ```
 
-Restore matches accessories by UUID, recreates rooms that no longer exist, and works like a sync: dry run first, then `--apply`. It moves only managed accessories in the selected home, even if the snapshot lists others. Restore does not need Home Assistant. You can edit the `room` column of a snapshot to place accessories by hand.
+Restore matches accessories by UUID, recreates rooms that no longer exist, and works like a sync: dry run first, then `--apply`. It moves only managed accessories in the selected home, even if the snapshot lists others. Restore does not need Home Assistant. You can edit the `room` column of a snapshot to place accessories by hand; snapshots edited in Excel or Numbers and saved as "CSV UTF-8" work.
 
 #### Limits
 
 - Only accessories from a Home Assistant HomeKit Bridge are managed. Device-trigger accessories (serial is a device id) and native HomeKit accessories are left alone. Every HomeKit Bridge from Home Assistant has serial `homekit.bridge`, so if the home also has a bridge from a second Home Assistant instance, its accessories are looked up in the Home Assistant at `HASS_SERVER` too.
+- When HomeKit marks an accessory as bridged but does not list it under any bridge, the app attributes it to the home's `homekit.bridge` accessory, and only when the home has exactly one such accessory.
 - Home Assistant area names become Home room names. An existing room with the same name (ignoring case) is reused; otherwise a room is created with the area's name. Renaming an area in Home Assistant therefore creates a new room on the next sync, and the old room stays in Home until you delete it.
 - Rooms are only created and filled, never deleted or renamed.
 - It runs when you run it. Run it again after moving entities between areas in Home Assistant.
 
 ## Development
+
+This is a fork of [TimCinel/homekit-mcp](https://github.com/TimCinel/homekit-mcp) that has diverged too far to merge from. Upstream changes are cherry-picked by hand.
 
 ### Testing
 
@@ -205,8 +235,12 @@ make lint-fix      # Auto-fix issues
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/mcp` | MCP server discovery |
+| `POST` | `/mcp` | JSON-RPC (`initialize`, `tools/list`, `tools/call`) |
+| `POST` | `/mcp/initialize` | Initialize an MCP session |
 | `POST` | `/mcp/tools/list` | List available tools |
 | `POST` | `/mcp/tools/call` | Execute tools |
+
+The local API has no authentication: any process running on the Mac can call it, including the tools that rename and switch accessories.
 
 ### Request rules
 
@@ -218,6 +252,8 @@ The server refuses requests it cannot be sure come from a local client:
 | `Host` other than `127.0.0.1:8080` or `localhost:8080` | `403` |
 | `POST` without `Content-Type: application/json` | `415` |
 | `POST` without `Content-Length` | `411` |
+| Any `Transfer-Encoding` header (chunked bodies are not supported) | `501` |
+| Request headers larger than 64 KiB | `431` |
 | Body larger than 1 MiB | `413` |
 
 No CORS headers are sent. Each tool call is answered within 20 seconds.
@@ -236,14 +272,6 @@ No CORS headers are sent. Each tool call is answered within 20 seconds.
 
 `get_all_accessories`, `get_all_rooms`, `set_accessory_room` and `create_room` return machine-readable results in `result.structuredContent`. In `get_all_accessories`, `bridge_uuid` and `bridge_serial_number` are `null` for accessories that are not behind a bridge (including bridges themselves), and `serial_number` and `firmware` are `null` when HomeKit cannot read them. The name-based tools (`get_accessory_by_name`, `get_room_by_name`, `get_room_accessories`) return their data in `result._meta`.
 
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests (`make test-ci`) and linting (`make lint`)
-5. Submit a pull request
-
 ## License
 
 This project is a fork of [TimCinel/homekit-mcp](https://github.com/TimCinel/homekit-mcp) and is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -259,7 +287,16 @@ This project is a fork of [TimCinel/homekit-mcp](https://github.com/TimCinel/hom
 
 **"HomeKit permissions denied"**
 - Verify HomeKit entitlement is enabled
-- Check Apple ID signing configuration
+- Check the signing team is a paid Apple Developer Program team
+
+**"The HomeKit MCP app reports no homes"**
+- With no other error this usually means the app was signed without the HomeKit entitlement. Check that the output lists `com.apple.developer.homekit`:
+
+  ```bash
+  codesign -d --entitlements :- "$(find ~/Library/Developer/Xcode/DerivedData -name HomeKitMCP.app -path '*Debug-maccatalyst*' | head -1)"
+  ```
+
+- If the entitlement is there, check that the Apple ID signed in on this Mac has a home in the Home app.
 
 **"HomeKit has not finished loading homes" (-32000)**
 - The app has just started; wait a few seconds and run the command again.
