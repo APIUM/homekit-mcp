@@ -4,37 +4,18 @@ import argparse
 import json
 import os
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
+
+import homekit_http
 
 
-DEFAULT_SERVER = os.environ.get("HOMEKIT_MCP_URL", "http://localhost:8080")
+DEFAULT_SERVER = os.environ.get("HOMEKIT_MCP_URL", "http://127.0.0.1:8080")
 
 
 def post_json(base_url: str, path: str, body: dict) -> dict:
-    url = urllib.parse.urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
-    data = json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
     try:
-        with urllib.request.urlopen(request) as response:
-            payload = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        message = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"Server returned HTTP {exc.code}: {message}") from exc
-    except urllib.error.URLError as exc:
-        raise SystemExit(f"Request failed: {exc.reason}") from exc
-
-    try:
-        return json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"Invalid JSON response: {exc}") from exc
+        return homekit_http.post_json(homekit_http.endpoint(base_url, path), body)
+    except homekit_http.RequestError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def render_response(payload: dict, output_json: bool) -> None:
@@ -74,19 +55,7 @@ def render_response(payload: dict, output_json: bool) -> None:
 
 
 def call_tool(base_url: str, tool_name: str, arguments: dict) -> dict:
-    return post_json(
-        base_url,
-        "/mcp/tools/call",
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments,
-            },
-        },
-    )
+    return post_json(base_url, "/mcp/tools/call", homekit_http.tool_call_body(tool_name, arguments))
 
 
 def parse_key_values(items: list[str]) -> dict:
@@ -107,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--server",
         default=DEFAULT_SERVER,
-        help="Server base URL. Defaults to HOMEKIT_MCP_URL or http://localhost:8080",
+        help="Server base URL. Defaults to HOMEKIT_MCP_URL or http://127.0.0.1:8080",
     )
     parser.add_argument(
         "--json",

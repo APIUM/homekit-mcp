@@ -2,74 +2,217 @@
 
 import argparse
 import csv
-import json
 import os
-import subprocess
+import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import homekit_http
+from homekit_http import RequestError
 
 
-DEFAULT_OUTPUT_DIR = "artifacts"
-UNKNOWN_SERIALS = {"", "Unknown", "unknown", "UNKNOWN"}
+DEFAULT_HOMEKIT_URL = "http://127.0.0.1:8080"
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "artifacts"
+HTTP_TIMEOUT = 30.0
+HA_BATCH_SIZE = 100
+ENTITY_ID_PATTERN = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+# Serial number Home Assistant's HomeKit Bridge gives the bridge accessory itself.
+HA_BRIDGE_SERIAL = "homekit.bridge"
+
+MOVE = "move"
+CREATE_AND_MOVE = "create_room+move"
+NO_CHANGE = "none"
+SKIP = "skip"
+ACTIONABLE = (MOVE, CREATE_AND_MOVE)
+
+PLAN_FIELDS = [
+    "accessory_uuid",
+    "name",
+    "serial",
+    "home",
+    "current_room",
+    "target_room",
+    "action",
+    "reason",
+]
+SNAPSHOT_FIELDS = ["accessory_uuid", "name", "serial", "home", "room"]
+
+AREA_TEMPLATE = """\
+{%- set ns = namespace(out={}) -%}
+{%- for id in ids -%}
+{%- set ns.out = dict(ns.out, **{id: {"area": area_name(id), "known": states[id] is not none or device_id(id) is not none}}) -%}
+{%- endfor -%}
+{{ ns.out | tojson }}"""
+
+
+class SyncError(Exception):
+    pass
+
+
+class ToolError(Exception):
+    pass
 
 
 @dataclass
 class Accessory:
+    uuid: str
     name: str
     serial: str
     room: str
+    home: str
+    home_uuid: str
+
+
+@dataclass
+class Room:
     uuid: str
+    name: str
+    home: str
+    home_uuid: str
 
 
 @dataclass
 class PlanRow:
+    accessory_uuid: str
     name: str
     serial: str
+    home: str
     current_room: str
     target_room: str
+    action: str
     reason: str
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Plan and apply HomeKit room moves using homekitctl and hass-cli."
-    )
-    parser.add_argument("--input-csv", help="Optional CSV with columns name,serial,room.")
-    parser.add_argument(
-        "--restore",
-        help="Restore from a saved snapshot CSV with columns name,serial,room. Alias for --input-csv.",
-    )
-    parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="Apply planned room moves via homekitctl move.",
-    )
-    parser.add_argument(
-        "--apply-plan",
-        help="Apply an existing plan CSV with columns name,serial,current_room,target_room,reason.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=DEFAULT_OUTPUT_DIR,
-        help=f"Directory for generated CSV files. Default: {DEFAULT_OUTPUT_DIR}",
-    )
-    parser.add_argument(
-        "--env-file",
-        default="env.source",
-        help="Optional shell-style env file with lines like export KEY=value.",
-    )
-    return parser.parse_args()
+@dataclass
+class HomeState:
+    accessories: List[Accessory]
+    rooms: List[Room]
+
+    def accessory(self, uuid: str) -> Optional[Accessory]:
+        for item in self.accessories:
+            if item.uuid.casefold() == uuid.casefold():
+                return item
+        return None
+
+    def find_room(self, home_uuid: str, name: str) -> Optional[Room]:
+        for room in self.rooms:
+            if room.home_uuid == home_uuid and room_key(room.name) == room_key(name):
+                return room
+        return None
+
+    def homes(self) -> Dict[str, str]:
+        homes: Dict[str, str] = {}
+        for item in [*self.rooms, *self.accessories]:
+            homes.setdefault(item.home_uuid, item.home)
+        return homes
+
+
+@dataclass
+class ApplyResult:
+    moved: List[str] = field(default_factory=list)
+    created_rooms: List[str] = field(default_factory=list)
+    skipped: List[str] = field(default_factory=list)
+    failures: List[str] = field(default_factory=list)
+
+
+def room_key(name: str) -> str:
+    return (name or "").strip().casefold()
+
+
+class HomeKitClient:
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+        self.url = homekit_http.endpoint(base_url, "/mcp/tools/call")
+        self.next_id = 0
+
+    def call(self, tool: str, arguments: dict) -> dict:
+        self.next_id += 1
+        body = homekit_http.tool_call_body(tool, arguments, self.next_id)
+        payload = homekit_http.post_json(self.url, body, timeout=HTTP_TIMEOUT)
+        if not isinstance(payload, dict):
+            raise ToolError(f"{tool} returned an unexpected response")
+        error = payload.get("error")
+        if error:
+            message = error.get("message") if isinstance(error, dict) else None
+            raise ToolError(message or str(error))
+        result = payload.get("result")
+        structured = result.get("structuredContent") if isinstance(result, dict) else None
+        if not isinstance(structured, dict):
+            raise ToolError(f"{tool} returned no structuredContent; build the app from this repository")
+        return structured
+
+    def read_state(self) -> HomeState:
+        try:
+            accessories = self.call("get_all_accessories", {}).get("accessories", [])
+            rooms = self.call("get_all_rooms", {}).get("rooms", [])
+        except RequestError as exc:
+            raise SyncError(
+                f"HomeKit MCP app request to {self.url} failed: {exc}. "
+                "Check the app is running and HOMEKIT_MCP_URL is correct."
+            ) from exc
+        except ToolError as exc:
+            raise SyncError(f"HomeKit MCP app error: {exc}") from exc
+        return HomeState(
+            accessories=[
+                Accessory(
+                    uuid=text(item, "uuid"),
+                    name=text(item, "name"),
+                    serial=text(item, "serial_number"),
+                    room=text(item, "room"),
+                    home=text(item, "home"),
+                    home_uuid=text(item, "home_uuid"),
+                )
+                for item in accessories
+            ],
+            rooms=[
+                Room(
+                    uuid=text(item, "uuid"),
+                    name=text(item, "name"),
+                    home=text(item, "home"),
+                    home_uuid=text(item, "home_uuid"),
+                )
+                for item in rooms
+            ],
+        )
+
+
+def text(item: dict, key: str) -> str:
+    value = item.get(key)
+    return "" if value is None else str(value)
+
+
+def fetch_ha_areas(server: str, token: str, entity_ids: List[str]) -> Dict[str, dict]:
+    url = homekit_http.endpoint(server, "/api/template")
+    headers = {"Authorization": f"Bearer {token}"}
+    areas: Dict[str, dict] = {}
+    for start in range(0, len(entity_ids), HA_BATCH_SIZE):
+        batch = entity_ids[start : start + HA_BATCH_SIZE]
+        body = {"template": AREA_TEMPLATE, "variables": {"ids": batch}}
+        try:
+            payload = homekit_http.post_json(url, body, headers=headers, timeout=HTTP_TIMEOUT)
+        except RequestError as exc:
+            if exc.status in (401, 403):
+                raise SyncError(
+                    f"Home Assistant at {server} rejected the access token (HTTP {exc.status}). "
+                    "Check HASS_TOKEN is a valid long-lived access token."
+                ) from exc
+            raise SyncError(f"Home Assistant request to {url} failed: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise SyncError("Home Assistant template API returned an unexpected response")
+        areas.update(payload)
+    return areas
 
 
 def load_env_file(path: Path) -> Dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise SyncError(f"Cannot read env file {path}: {exc.strerror}") from exc
     loaded: Dict[str, str] = {}
-    if not path.exists():
-        return loaded
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in lines:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -78,307 +221,321 @@ def load_env_file(path: Path) -> Dict[str, str]:
         if "=" not in line:
             continue
         key, value = line.split("=", 1)
-        loaded[key.strip()] = value.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        loaded[key.strip()] = value
     return loaded
 
 
-def cleaned_env(env_file: str) -> Dict[str, str]:
-    env = os.environ.copy()
-    env.update(load_env_file(Path(env_file)))
-    env.pop("LC_ALL", None)
-    env["LANG"] = env.get("LANG") or "en_AU.UTF-8"
-    env["LC_CTYPE"] = env.get("LC_CTYPE") or env["LANG"]
-    return env
+def select_home(state: HomeState, requested: Optional[str]) -> Optional[str]:
+    homes = state.homes()
+    listed = ", ".join(sorted(homes.values()))
+    if requested:
+        matches = [uuid for uuid, name in homes.items() if room_key(name) == room_key(requested)]
+        if not matches:
+            raise SyncError(f"No home named '{requested}'. Homes: {listed}")
+        return matches[0]
+    if len(homes) <= 1:
+        return next(iter(homes), None)
+    with_candidates = {item.home_uuid for item in state.accessories if is_candidate(item.serial)}
+    if len(with_candidates) == 1:
+        return with_candidates.pop()
+    raise SyncError(f"Several homes found ({listed}); pass --home NAME to choose one.")
 
 
-def run_json(command: List[str], env: Dict[str, str]) -> object:
-    proc = subprocess.run(command, capture_output=True, text=True, env=env)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"Command failed ({proc.returncode}): {' '.join(command)}\n{proc.stderr.strip()}"
-        )
-
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Command did not return JSON: {' '.join(command)}\n{proc.stdout[:500]}"
-        ) from exc
+def is_candidate(serial: str) -> bool:
+    return serial != HA_BRIDGE_SERIAL and bool(ENTITY_ID_PATTERN.match(serial))
 
 
-def run_text(command: List[str], env: Dict[str, str]) -> str:
-    proc = subprocess.run(command, capture_output=True, text=True, env=env)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"Command failed ({proc.returncode}): {' '.join(command)}\n{proc.stderr.strip()}"
-        )
-    return proc.stdout
+def row_for(accessory: Accessory, target_room: str, action: str, reason: str) -> PlanRow:
+    return PlanRow(
+        accessory_uuid=accessory.uuid,
+        name=accessory.name,
+        serial=accessory.serial,
+        home=accessory.home,
+        current_room=accessory.room,
+        target_room=target_room,
+        action=action,
+        reason=reason,
+    )
 
 
-def get_homekit_accessories(env: Dict[str, str]) -> List[Accessory]:
-    payload = run_json(["homekitctl", "--json", "accessories"], env)
-    items = payload["result"]["_meta"]["accessories"]
-    return [
-        Accessory(
-            name=item.get("name", ""),
-            serial=item.get("serial_number", "") or "",
-            room=item.get("room", "") or "",
-            uuid=item.get("uuid", "") or "",
-        )
-        for item in items
-    ]
+def target_row(state: HomeState, accessory: Accessory, target: str, source: str) -> PlanRow:
+    existing = state.find_room(accessory.home_uuid, target)
+    if room_key(accessory.room) == room_key(target):
+        return row_for(accessory, accessory.room, NO_CHANGE, f"{source}; already in room")
+    if existing:
+        return row_for(accessory, existing.name, MOVE, source)
+    return row_for(accessory, target, CREATE_AND_MOVE, f"{source}; room missing in Home")
 
 
-def get_homekit_rooms(env: Dict[str, str]) -> List[str]:
-    payload = run_json(["homekitctl", "--json", "rooms"], env)
-    items = payload["result"]["_meta"]["rooms"]
-    return sorted(item.get("name", "") for item in items if item.get("name"))
-
-
-def get_ha_registry(kind: str, env: Dict[str, str]) -> List[dict]:
-    payload = run_json(["hass-cli", "-o", "json", "raw", "ws", kind], env)
-    if isinstance(payload, dict) and isinstance(payload.get("result"), list):
-        return payload["result"]
-    raise RuntimeError(f"Unexpected hass-cli output for {kind}")
-
-
-def load_ha_entity_data(env: Dict[str, str]) -> Tuple[set[str], Dict[str, str]]:
-    entity_registry = get_ha_registry("config/entity_registry/list", env)
-    device_registry = get_ha_registry("config/device_registry/list", env)
-    area_registry = get_ha_registry("config/area_registry/list", env)
-
-    area_by_id = {item["area_id"]: item["name"] for item in area_registry if item.get("area_id")}
-    device_area_by_id = {
-        item["id"]: area_by_id.get(item.get("area_id"), "")
-        for item in device_registry
-        if item.get("id")
-    }
-
-    entity_ids: set[str] = set()
-    room_by_entity: Dict[str, str] = {}
-    for entity in entity_registry:
-        entity_id = entity.get("entity_id")
-        if not entity_id:
+def plan_sync(state: HomeState, home_uuid: Optional[str], areas: Dict[str, dict]) -> List[PlanRow]:
+    rows: List[PlanRow] = []
+    for accessory in state.accessories:
+        if accessory.home_uuid != home_uuid:
             continue
-        entity_ids.add(entity_id)
-
-        area_name = area_by_id.get(entity.get("area_id"), "")
-        if not area_name:
-            area_name = device_area_by_id.get(entity.get("device_id"), "")
-        if area_name:
-            room_by_entity[entity_id] = area_name
-    return entity_ids, room_by_entity
-
-
-def is_known_serial(serial: str) -> bool:
-    return serial not in UNKNOWN_SERIALS
-
-
-def load_csv_rows(path: Path) -> List[dict]:
-    with path.open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
-    required = {"name", "serial", "room"}
-    if not rows:
-        return []
-    missing = required - set(rows[0].keys())
-    if missing:
-        raise RuntimeError(f"CSV {path} is missing columns: {', '.join(sorted(missing))}")
+        if accessory.serial == HA_BRIDGE_SERIAL:
+            rows.append(row_for(accessory, "", SKIP, "Home Assistant bridge"))
+            continue
+        if not is_candidate(accessory.serial):
+            rows.append(row_for(accessory, "", SKIP, "serial is not a Home Assistant entity id"))
+            continue
+        info = areas.get(accessory.serial) or {}
+        area = (info.get("area") or "").strip()
+        if not area:
+            reason = "no area in Home Assistant" if info.get("known") else "entity not found in Home Assistant"
+            rows.append(row_for(accessory, "", SKIP, reason))
+            continue
+        rows.append(target_row(state, accessory, area, "Home Assistant area"))
     return rows
 
 
-def load_plan_rows(path: Path) -> List[PlanRow]:
-    with path.open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
-
-    required = {"name", "serial", "current_room", "target_room", "reason"}
-    if not rows:
-        return []
-    missing = required - set(rows[0].keys())
-    if missing:
-        raise RuntimeError(f"Plan CSV {path} is missing columns: {', '.join(sorted(missing))}")
-
-    return [
-        PlanRow(
-            name=row.get("name", "") or "",
-            serial=row.get("serial", "") or "",
-            current_room=row.get("current_room", "") or "",
-            target_room=row.get("target_room", "") or "",
-            reason=row.get("reason", "") or "",
-        )
-        for row in rows
-    ]
-
-
-def key_for_row(name: str, serial: str) -> Tuple[str, str]:
-    if is_known_serial(serial):
-        return ("serial", serial)
-    return ("name", name)
-
-
-def build_loaded_room_map(rows: Iterable[dict]) -> Dict[Tuple[str, str], str]:
-    loaded: Dict[Tuple[str, str], str] = {}
-    for row in rows:
-        loaded[key_for_row(row.get("name", ""), row.get("serial", ""))] = row.get("room", "") or ""
-    return loaded
-
-
-def merge_reason(existing: str, new_reason: str) -> str:
-    parts = [part for part in existing.split(";") if part]
-    if new_reason not in parts:
-        parts.append(new_reason)
-    return ";".join(parts)
-
-
-def build_plan(
-    accessories: List[Accessory],
-    loaded_room_map: Dict[Tuple[str, str], str],
-    ha_entity_ids: set[str],
-    ha_room_map: Dict[str, str],
-    valid_rooms: set[str],
-) -> List[PlanRow]:
-    plan: List[PlanRow] = []
-
-    for accessory in accessories:
-        key = key_for_row(accessory.name, accessory.serial)
-        target_room = ""
-        reason = ""
-
-        loaded_room = loaded_room_map.get(key, "")
-        if loaded_room:
-            target_room = loaded_room
-            reason = merge_reason(reason, "loaded-csv")
-
-        if is_known_serial(accessory.serial):
-            ha_room = ha_room_map.get(accessory.serial, "")
-            in_homeassistant = accessory.serial in ha_entity_ids
-            if ha_room and ha_room in valid_rooms and not target_room:
-                target_room = ha_room
-                reason = merge_reason(reason, "homeassistant-room")
-            elif ha_room and ha_room in valid_rooms:
-                reason = merge_reason(reason, "homeassistant-room")
-            elif ha_room:
-                reason = merge_reason(reason, "homeassistant-room-no-homekit-match")
-            elif in_homeassistant:
-                reason = merge_reason(reason, "homeassistant-no-room")
-            else:
-                reason = merge_reason(reason, "not-homeassistant")
+def plan_restore(state: HomeState, snapshot: List[dict]) -> List[PlanRow]:
+    rows: List[PlanRow] = []
+    for entry in snapshot:
+        uuid = (entry.get("accessory_uuid") or "").strip()
+        room = (entry.get("room") or "").strip()
+        accessory = state.accessory(uuid)
+        if accessory is None:
+            rows.append(
+                PlanRow(
+                    accessory_uuid=uuid,
+                    name=entry.get("name") or "",
+                    serial=entry.get("serial") or "",
+                    home=entry.get("home") or "",
+                    current_room="",
+                    target_room=room,
+                    action=SKIP,
+                    reason="accessory not found in Home",
+                )
+            )
+        elif not room:
+            rows.append(row_for(accessory, "", SKIP, "no room in snapshot"))
         else:
-            reason = merge_reason(reason, "not-homeassistant")
-
-        plan.append(
-            PlanRow(
-                name=accessory.name,
-                serial=accessory.serial,
-                current_room=accessory.room,
-                target_room=target_room,
-                reason=reason,
-            )
-        )
-
-    return plan
+            rows.append(target_row(state, accessory, room, "snapshot"))
+    return rows
 
 
-def timestamp() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+def label(row: PlanRow) -> str:
+    serial = f" [{row.serial}]" if row.serial else ""
+    return f"{row.name}{serial} ({row.accessory_uuid})"
 
 
-def write_plan_csv(path: Path, rows: List[PlanRow]) -> None:
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=["name", "serial", "current_room", "target_room", "reason"],
-        )
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(
-                {
-                    "name": row.name,
-                    "serial": row.serial,
-                    "current_room": row.current_room,
-                    "target_room": row.target_room,
-                    "reason": row.reason,
-                }
-            )
-
-
-def write_snapshot_csv(path: Path, accessories: List[Accessory]) -> None:
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["name", "serial", "room"])
-        writer.writeheader()
-        for item in accessories:
-            writer.writerow({"name": item.name, "serial": item.serial, "room": item.room})
-
-
-def apply_moves(rows: List[PlanRow], valid_rooms: set[str], env: Dict[str, str]) -> int:
-    moves = 0
+def apply_rows(client: HomeKitClient, state: HomeState, rows: List[PlanRow]) -> ApplyResult:
+    result = ApplyResult()
+    ready_rooms: Dict[Tuple[str, str], str] = {}
+    failed_rooms: Dict[Tuple[str, str], str] = {}
     for row in rows:
-        if not row.target_room or row.current_room == row.target_room:
+        if row.action not in ACTIONABLE:
             continue
-        if row.target_room not in valid_rooms:
-            print(
-                f"Skipping '{row.name}': target room '{row.target_room}' does not exist in HomeKit",
-                file=sys.stderr,
-            )
+        accessory = state.accessory(row.accessory_uuid)
+        if accessory is None:
+            result.skipped.append(f"{label(row)}: accessory no longer exists")
+            continue
+        if room_key(accessory.room) == room_key(row.target_room):
+            result.skipped.append(f"{label(row)}: already in {accessory.room}")
+            continue
+        if room_key(accessory.room) != room_key(row.current_room):
+            result.skipped.append(f"{label(row)}: room changed since the plan was made (now {accessory.room})")
             continue
 
-        run_text(["homekitctl", "move", row.name, row.target_room], env)
-        moves += 1
-    return moves
+        existing = state.find_room(accessory.home_uuid, row.target_room)
+        key = (accessory.home_uuid, room_key(row.target_room))
+        if existing:
+            room_uuid = existing.uuid
+        elif key in failed_rooms:
+            result.failures.append(f"{label(row)}: cannot create room {row.target_room}: {failed_rooms[key]}")
+            continue
+        elif key in ready_rooms:
+            room_uuid = ready_rooms[key]
+        else:
+            name = row.target_room.strip()
+            try:
+                room = client.call("create_room", {"home_uuid": accessory.home_uuid, "name": name}).get("room")
+                if not isinstance(room, dict) or not room.get("uuid"):
+                    raise ToolError("create_room returned no room uuid")
+            except (RequestError, ToolError) as exc:
+                failed_rooms[key] = str(exc)
+                result.failures.append(f"{label(row)}: cannot create room {name}: {exc}")
+                continue
+            room_uuid = ready_rooms[key] = str(room["uuid"])
+            if room.get("created", True):
+                result.created_rooms.append(f"{room.get('name') or name} in {accessory.home}")
+
+        try:
+            client.call("set_accessory_room", {"accessory_uuid": accessory.uuid, "room_uuid": room_uuid})
+        except (RequestError, ToolError) as exc:
+            result.failures.append(f"{label(row)}: move to {row.target_room} failed: {exc}")
+            continue
+        result.moved.append(f"{label(row)}: {accessory.room} -> {row.target_room}")
+    return result
 
 
-def main() -> int:
+def artifact_path(output_dir: Path, kind: str) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"homekit-{kind}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    path = output_dir / f"{stem}.csv"
+    counter = 1
+    while path.exists():
+        path = output_dir / f"{stem}-{counter}.csv"
+        counter += 1
+    return path
+
+
+def write_csv(path: Path, fields: List[str], rows: List[dict]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def read_csv(path: Path, required: List[str]) -> List[dict]:
     try:
-        args = parse_args()
-        env = cleaned_env(args.env_file)
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+            columns = set(reader.fieldnames or [])
+    except OSError as exc:
+        raise SyncError(f"Cannot read {path}: {exc.strerror}") from exc
+    missing = [name for name in required if name not in columns]
+    if missing:
+        raise SyncError(f"{path} is missing columns: {', '.join(missing)}")
+    return rows
 
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
 
-        stamp = timestamp()
-        rooms = set(get_homekit_rooms(env))
+def write_plan(output_dir: Path, rows: List[PlanRow]) -> Path:
+    path = artifact_path(output_dir, "plan")
+    write_csv(path, PLAN_FIELDS, [{name: getattr(row, name) for name in PLAN_FIELDS} for row in rows])
+    return path
 
-        if args.apply_plan:
-            plan_path = Path(args.apply_plan)
-            plan = load_plan_rows(plan_path)
-            move_candidates = [row for row in plan if row.target_room]
-            print(f"Loaded plan CSV: {plan_path}")
-            print(f"Rows in plan: {len(plan)}")
-            print(f"Planned moves: {len(move_candidates)}")
-            moves = apply_moves(plan, rooms, env)
-        else:
-            input_csv = args.restore or args.input_csv
-            loaded_rows = load_csv_rows(Path(input_csv)) if input_csv else []
-            accessories = get_homekit_accessories(env)
 
-            loaded_room_map = build_loaded_room_map(loaded_rows)
-            ha_entity_ids, ha_room_map = load_ha_entity_data(env)
-            plan = build_plan(accessories, loaded_room_map, ha_entity_ids, ha_room_map, rooms)
-            plan = [row for row in plan if row.current_room != row.target_room]
+def load_plan(path: Path) -> List[PlanRow]:
+    rows = read_csv(path, ["accessory_uuid", "current_room", "target_room", "action"])
+    return [PlanRow(**{name: (row.get(name) or "") for name in PLAN_FIELDS}) for row in rows]
 
-            plan_path = output_dir / f"homekit-plan-{stamp}.csv"
-            write_plan_csv(plan_path, plan)
 
-            move_candidates = [row for row in plan if row.target_room]
+def write_snapshot(output_dir: Path, accessories: List[Accessory]) -> Path:
+    path = artifact_path(output_dir, "snapshot")
+    write_csv(
+        path,
+        SNAPSHOT_FIELDS,
+        [
+            {"accessory_uuid": a.uuid, "name": a.name, "serial": a.serial, "home": a.home, "room": a.room}
+            for a in accessories
+        ],
+    )
+    return path
 
-            print(f"Wrote plan CSV: {plan_path}")
-            print(f"Accessories scanned: {len(accessories)}")
-            print(f"Planned moves: {len(move_candidates)}")
 
-            if not args.apply:
-                print("Dry run only. Re-run with --apply to move accessories.")
-                return 0
+def print_plan(rows: List[PlanRow], plan_path: Path) -> None:
+    pending = [row for row in rows if row.action in ACTIONABLE]
+    for row in pending:
+        print(f"  {row.action:<16} {label(row)}: {row.current_room or '-'} -> {row.target_room}")
+    new_rooms = sorted({row.target_room for row in pending if row.action == CREATE_AND_MOVE}, key=room_key)
+    print(f"Wrote plan CSV: {plan_path}")
+    print(f"Accessories in plan: {len(rows)}")
+    print(f"To move: {len(pending)}")
+    if new_rooms:
+        print(f"Rooms to create: {', '.join(new_rooms)}")
+    print(f"Already in place: {sum(1 for row in rows if row.action == NO_CHANGE)}")
+    print(f"Skipped (see reason column): {sum(1 for row in rows if row.action == SKIP)}")
 
-            moves = apply_moves(plan, rooms, env)
 
-        final_accessories = get_homekit_accessories(env)
-        snapshot_path = output_dir / f"homekit-snapshot-{stamp}.csv"
-        write_snapshot_csv(snapshot_path, final_accessories)
-
-        print(f"Moves applied: {moves}")
-        print(f"Wrote snapshot CSV: {snapshot_path}")
+def apply_and_report(client: HomeKitClient, state: HomeState, rows: List[PlanRow], output_dir: Path) -> int:
+    if not any(row.action in ACTIONABLE for row in rows):
+        print("Nothing to apply.")
         return 0
-    except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
+    print(f"Wrote snapshot CSV: {write_snapshot(output_dir, state.accessories)}")
+    result = apply_rows(client, state, rows)
+    for line in result.created_rooms:
+        print(f"Created room: {line}")
+    for line in result.moved:
+        print(f"Moved: {line}")
+    for line in result.skipped:
+        print(f"Skipped: {line}")
+    print(f"Moves applied: {len(result.moved)}")
+    if result.failures:
+        print(f"Failures: {len(result.failures)}", file=sys.stderr)
+        for line in result.failures:
+            print(f"  {line}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def run(args: argparse.Namespace, env: Dict[str, str]) -> int:
+    client = HomeKitClient(env.get("HOMEKIT_MCP_URL") or DEFAULT_HOMEKIT_URL)
+    output_dir = Path(args.output_dir)
+
+    if args.apply_plan:
+        rows = load_plan(Path(args.apply_plan))
+        print(f"Loaded plan CSV: {args.apply_plan} ({len(rows)} rows)")
+        return apply_and_report(client, client.read_state(), rows, output_dir)
+
+    if args.restore:
+        snapshot = read_csv(Path(args.restore), ["accessory_uuid", "room"])
+        state = client.read_state()
+        rows = plan_restore(state, snapshot)
+    else:
+        server = env.get("HASS_SERVER", "").strip()
+        token = env.get("HASS_TOKEN", "").strip()
+        if not server or not token:
+            raise SyncError("HASS_SERVER and HASS_TOKEN must be set in the environment or --env-file.")
+        state = client.read_state()
+        home_uuid = select_home(state, args.home)
+        candidates = sorted(
+            {a.serial for a in state.accessories if a.home_uuid == home_uuid and is_candidate(a.serial)}
+        )
+        rows = plan_sync(state, home_uuid, fetch_ha_areas(server, token, candidates) if candidates else {})
+        if home_uuid is not None:
+            print(f"Home: {state.homes()[home_uuid]}")
+
+    print_plan(rows, write_plan(output_dir, rows))
+    if not args.apply:
+        print("Dry run only. Re-run with --apply, or pass the plan CSV to --apply-plan.")
+        return 0
+    return apply_and_report(client, state, rows, output_dir)
+
+
+def parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Move Apple Home accessories bridged from Home Assistant into the Home room named after "
+            "their Home Assistant area. Dry run by default: writes a plan CSV and changes nothing."
+        ),
+        epilog=(
+            "Environment: HASS_SERVER, HASS_TOKEN (long-lived access token), "
+            f"HOMEKIT_MCP_URL (default {DEFAULT_HOMEKIT_URL}). "
+            "Exit codes: 0 success or nothing to do, 1 error, 2 some changes failed."
+        ),
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply-plan", metavar="PLAN_CSV", help="Apply the move rows of an existing plan CSV.")
+    mode.add_argument(
+        "--restore",
+        metavar="SNAPSHOT_CSV",
+        help="Plan moves back to the rooms in a snapshot CSV (matched by accessory UUID).",
+    )
+    parser.add_argument("--apply", action="store_true", help="Apply the plan after writing it.")
+    parser.add_argument("--home", metavar="NAME", help="Home to sync when the account has several homes.")
+    parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for plan and snapshot CSV files. Default: artifacts/ in the repository.",
+    )
+    parser.add_argument("--env-file", metavar="PATH", help="File with KEY=VALUE lines, applied over the environment.")
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[List[str]] = None, environ: Optional[Dict[str, str]] = None) -> int:
+    args = parse_args(argv)
+    env = dict(os.environ if environ is None else environ)
+    try:
+        if args.env_file:
+            env.update(load_env_file(Path(args.env_file)))
+        return run(args, env)
+    except SyncError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
 
