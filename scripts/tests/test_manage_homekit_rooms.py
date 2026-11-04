@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -266,6 +267,15 @@ class PlanTests(RoomSyncTestCase):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = manage_homekit_rooms.main(["--env-file", str(env_file), "--output-dir", self.output_dir], {})
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertEqual(self.plan_by_uuid(out.getvalue())["A1"]["target_room"], "Kitchen")
+
+    def test_env_file_path_expands_home(self):
+        env_file = Path(self.output_dir) / "home-relative.env"
+        env_file.write_text(f"HASS_SERVER={self.ha.url}\nHASS_TOKEN={TOKEN}\nHOMEKIT_MCP_URL={self.homekit.url}\n", encoding="utf-8")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": self.output_dir}), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = manage_homekit_rooms.main(["--env-file", "~/home-relative.env", "--output-dir", self.output_dir], {})
         self.assertEqual(code, 0, err.getvalue())
         self.assertEqual(self.plan_by_uuid(out.getvalue())["A1"]["target_room"], "Kitchen")
 

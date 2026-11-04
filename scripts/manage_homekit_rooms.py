@@ -572,7 +572,7 @@ def main(argv: Optional[List[str]] = None, environ: Optional[Dict[str, str]] = N
     env = dict(os.environ if environ is None else environ)
     try:
         if args.env_file:
-            env.update(load_env_file(Path(args.env_file)))
+            env.update(load_env_file(Path(args.env_file).expanduser()))
         return run(args, env)
     except SyncError as exc:
         print(f"Error: {exc}", file=sys.stderr)

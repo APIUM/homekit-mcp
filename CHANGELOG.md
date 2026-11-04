@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (APIUM fork)
+- Room sync script (`scripts/manage_homekit_rooms.py`) rewritten: standard library only, reads Home Assistant areas over the REST API, moves only accessories behind a Home Assistant bridge by UUID, creates missing rooms, snapshot and restore, `make sync` and `make sync-apply`
+- New `create_room` tool; `get_all_accessories`, `get_all_rooms`, `set_accessory_room` and `create_room` return `structuredContent`, and accessories include `bridge_uuid` and `bridge_serial_number`
+- HTTP server listens on 127.0.0.1 only, refuses browser requests and other `Host` values, reads whole requests by `Content-Length`, and reports HomeKit loading and permission errors
+- Removed the Server-Sent Events endpoint and the welcome page
+- CI builds the Mac Catalyst app and runs the Python tests
+
 ### Added
 - Initial HomeKit MCP Server implementation
-- HTTP-based MCP protocol support with Server-Sent Events
+- HTTP-based MCP protocol support
 - Three core tools: `get_all_accessories`, `get_all_rooms`, `set_accessory_room`
 - Mac Catalyst app for HomeKit framework access on macOS
 - Comprehensive test suite with CI-friendly Swift Package Manager tests

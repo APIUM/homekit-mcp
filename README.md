@@ -23,6 +23,11 @@ This is implemented as a macOS app rather than a CLI tool because HomeKit requir
 ```bash
 git clone https://github.com/APIUM/homekit-mcp.git
 cd homekit-mcp
+```
+
+Before the first `make build`, sign in to Xcode with the account of your Apple Developer Program team (Xcode > Settings > Accounts), then open `HomeKitSync.xcodeproj` and build once in Xcode so it sets up signing and the HomeKit capability for that team. After that:
+
+```bash
 make build
 make run
 ```
@@ -101,7 +106,7 @@ It uses only the Python 3.9+ standard library.
 1. Xcode with Command Line Tools.
 2. Open `HomeKitSync.xcodeproj` and check Signing & Capabilities for the `HomeKitSync` target: a paid Apple Developer Program team and the HomeKit capability (see [Quick Start](#quick-start) to use your own team and bundle id).
 3. Build and run (`make build && make run`, or Run in Xcode). On first launch macOS asks for permission to access your Home data: allow it. If you declined, enable it in System Settings > Privacy & Security > HomeKit.
-4. Pair the "Home Assistant" bridge from the Home app on your iPhone (Add Accessory, then enter or scan the code from Home Assistant's "HomeKit Pairing" notification), using the same Apple ID as the Mac.
+4. Pair your Home Assistant HomeKit Bridge from the Home app on your iPhone (Add Accessory, then enter or scan the code from Home Assistant's "HomeKit Pairing" notification), using the same Apple ID as the Mac. Its name comes from the bridge's configuration in Home Assistant ("HASS Bridge ..." by default).
 5. Keep the app running while the script runs. It listens on `127.0.0.1:8080` only, so run the script on the same Mac.
 
 #### Home Assistant access token
@@ -135,7 +140,7 @@ $ chmod 600 ~/.config/homekit-room-sync.env
    $ scripts/homekitctl.py accessories
    ```
 
-   If they show `unknown` or something else, the sync cannot work on this macOS version; it will skip those accessories.
+   `unknown` can mean HomeKit timed out reading the value: check Home Assistant is running and the bridge is reachable in the Home app, then run the command again. Only if the serial numbers stay `unknown`, or show something other than entity ids, does the sync not work on this macOS version; it would skip those accessories.
 
 2. Dry run. Nothing in Home changes:
 
@@ -170,7 +175,7 @@ $ chmod 600 ~/.config/homekit-room-sync.env
    $ make sync-apply
    ```
 
-`ENV_FILE=path` overrides the env file for both targets (`make sync ENV_FILE=~/other.env`). Run the script directly for the other options:
+`ENV_FILE=path` overrides the env file for both targets (`make sync ENV_FILE=$HOME/other.env`). Run the script directly for the other options:
 
 ```
 $ scripts/manage_homekit_rooms.py --env-file ~/.config/homekit-room-sync.env [--apply] [--home NAME] [--output-dir DIR]
